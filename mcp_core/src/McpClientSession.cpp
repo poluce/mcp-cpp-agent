@@ -16,6 +16,7 @@ void McpClientSession::init() {
     });
 
     m_transport->setOnClose([self]() {
+        self->log(LogLevel::Warning, "Transport connection closed. Releasing all pending requests.");
         self->m_state = SessionState::Shutdown;
         
         std::vector<ResponseCallback> callbacks;
@@ -67,6 +68,7 @@ int64_t McpClientSession::sendRequest(const std::string& method, const json& par
         {"params", params}
     };
 
+    log(LogLevel::Debug, "sendRequest: method=" + method + ", id=" + std::to_string(id));
     m_transport->send(requestMsg.dump());
     return id;
 }
@@ -86,14 +88,19 @@ void McpClientSession::registerNotificationHandler(const std::string& method, No
 }
 
 void McpClientSession::handleIncomingMessage(const std::string& rawMessage) {
+    log(LogLevel::Debug, "handleIncomingMessage: " + rawMessage);
     json j;
     try {
         j = json::parse(rawMessage);
     } catch (...) {
+        log(LogLevel::Error, "JSON parsing failed on incoming message: " + rawMessage);
         return; 
     }
 
-    if (!j.is_object()) return;
+    if (!j.is_object()) {
+        log(LogLevel::Warning, "Incoming message is not a JSON object: " + rawMessage);
+        return;
+    }
 
     if (j.contains("id")) {
         if (j.contains("result") || j.contains("error")) {
@@ -127,6 +134,9 @@ void McpClientSession::handleResponse(const json& responseJson) {
         if (it != m_pendingRequests.end()) {
             cb = std::move(it->second.callback);
             m_pendingRequests.erase(it);
+            log(LogLevel::Info, "Processing response for id=" + std::to_string(id));
+        } else {
+            log(LogLevel::Warning, "Received response for unregistered id=" + std::to_string(id));
         }
     }
 
@@ -460,6 +470,7 @@ void McpClientSession::getPrompt(const std::string& name, const json& arguments,
 }
 
 void McpClientSession::cancelRequest(int64_t requestId) {
+    log(LogLevel::Info, "Request cancelled locally: id=" + std::to_string(requestId));
     ResponseCallback cb;
     {
         std::lock_guard<std::mutex> lock(m_mutex);
@@ -491,6 +502,7 @@ void McpClientSession::checkRequestTimeouts(std::chrono::milliseconds timeoutLim
         for (auto it = m_pendingRequests.begin(); it != m_pendingRequests.end(); ) {
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - it->second.timestamp);
             if (elapsed >= timeoutLimit) {
+                log(LogLevel::Warning, "Request timed out: id=" + std::to_string(it->first));
                 expiredRequests.push_back({it->first, std::move(it->second.callback)});
                 it = m_pendingRequests.erase(it);
             } else {
@@ -726,6 +738,71 @@ json McpClientSession::getPromptSync(const std::string& name, const json& argume
     }
     if (errorOut) *errorOut = {{"code", -32001}, {"message", "Synchronous getPrompt timed out"}};
     return json::object();
+}
+
+int64_t McpClientSession::sendRequestRaw(const std::string& method, const std::string& paramsJson, RawResponseCallback callback) {
+    json params = json::object();
+    if (!paramsJson.empty()) {
+        try {
+            params = json::parse(paramsJson);
+        } catch (...) {
+            log(LogLevel::Error, "sendRequestRaw: Failed to parse input paramsJson: " + paramsJson);
+            callback("{}", "{\"code\":-32602,\"message\":\"Invalid params: JSON parse error\"}");
+            return -1;
+        }
+    }
+    return sendRequest(method, params, [callback](const json& res, const json& err) {
+        callback(res.dump(), err.dump());
+    });
+}
+
+void McpClientSession::callToolRaw(const std::string& name, const std::string& argumentsJson,
+                                   std::function<void(const std::string& contentJson, const std::string& errorJson)> callback) {
+    json args = json::object();
+    if (!argumentsJson.empty()) {
+        try {
+            args = json::parse(argumentsJson);
+        } catch (...) {
+            log(LogLevel::Error, "callToolRaw: Failed to parse input argumentsJson: " + argumentsJson);
+            callback("{}", "{\"code\":-32602,\"message\":\"Invalid arguments: JSON parse error\"}");
+            return;
+        }
+    }
+    callTool(name, args, [callback](const json& res, const json& err) {
+        callback(res.dump(), err.dump());
+    });
+}
+
+std::string McpClientSession::callToolSyncRaw(const std::string& name, const std::string& argumentsJson,
+                                              std::string* errorJsonOut, std::chrono::milliseconds timeout) {
+    auto pr = std::make_shared<std::promise<std::pair<std::string, std::string>>>();
+    auto fut = pr->get_future();
+    callToolRaw(name, argumentsJson, [pr](const std::string& res, const std::string& err) {
+        pr->set_value({res, err});
+    });
+    if (fut.wait_for(timeout) == std::future_status::ready) {
+        auto res = fut.get();
+        if (errorJsonOut) *errorJsonOut = res.second;
+        return res.first;
+    }
+    if (errorJsonOut) *errorJsonOut = "{\"code\":-32001,\"message\":\"Synchronous callToolRaw timed out\"}";
+    return "{}";
+}
+
+void McpClientSession::setLogCallback(LogCallback callback) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_logCallback = std::move(callback);
+}
+
+void McpClientSession::log(LogLevel level, const std::string& message) {
+    LogCallback cb;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        cb = m_logCallback;
+    }
+    if (cb) {
+        cb(level, message);
+    }
 }
 
 } // namespace mcp

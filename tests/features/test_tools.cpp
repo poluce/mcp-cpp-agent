@@ -191,4 +191,52 @@ void test_tools() {
         serverThread.join();
         std::cout << "  [✓] Scenario 4: Synchronous API blocking call and response validation\n";
     }
+
+    // ----------------------------------------------------
+    // Scenario 5: Raw String API & Logging validation (原始字符串接口与日志系统校验)
+    // ----------------------------------------------------
+    {
+        auto transport = std::make_shared<MockTransport>();
+        auto session = std::make_shared<mcp::McpClientSession>(transport);
+        session->init();
+        session->start();
+
+        bool logReceived = false;
+        session->setLogCallback([&](mcp::LogLevel level, const std::string& msg) {
+            if (level == mcp::LogLevel::Debug && msg.find("sendRequest") != std::string::npos) {
+                logReceived = true;
+            }
+        });
+
+        std::thread serverThread([&]() {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            mcp::json initResp = {
+                {"jsonrpc", "2.0"}, {"id", 1},
+                {"result", {{"protocolVersion", mcp::McpClientSession::MCP_PROTOCOL_VERSION}, {"capabilities", mcp::json::object()}, {"serverInfo", mcp::json::object()}}}
+            };
+            transport->pushServerMessage(initResp.dump());
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            mcp::json toolsResp = {
+                {"jsonrpc", "2.0"}, {"id", 2},
+                {"result", {
+                    {"content", mcp::json::array({{{"type", "text"}, {"text", "raw success"}}})}
+                }}
+            };
+            transport->pushServerMessage(toolsResp.dump());
+        });
+
+        bool initSuccess = session->initializeSync("raw-client", "1.0.0");
+        assert(initSuccess);
+
+        std::string errOut;
+        std::string result = session->callToolSyncRaw("calculate_add", "{\"a\":10,\"b\":20}", &errOut);
+        
+        assert(errOut.find("code") == std::string::npos && "Raw tool call returned error.");
+        assert(result.find("raw success") != std::string::npos && "Raw tool call returned wrong response.");
+        assert(logReceived && "LogCallback was not triggered on sendRequest.");
+
+        serverThread.join();
+        std::cout << "  [✓] Scenario 5: Raw String API uncoupled call and LogCallback trace validation\n";
+    }
 }

@@ -19,6 +19,15 @@ enum class SessionState {
     Shutdown
 };
 
+enum class LogLevel {
+    Debug,
+    Info,
+    Warning,
+    Error
+};
+
+using LogCallback = std::function<void(LogLevel level, const std::string& message)>;
+
 /**
  * @brief Manages a Model Context Protocol Client Session.
  * 
@@ -187,6 +196,22 @@ public:
                        json* errorOut = nullptr,
                        std::chrono::milliseconds timeout = std::chrono::milliseconds(5000));
 
+    // ==========================================
+    // Raw String APIs (Uncoupled from nlohmann/json)
+    // ==========================================
+    using RawResponseCallback = std::function<void(const std::string& resultJson, const std::string& errorJson)>;
+    
+    int64_t sendRequestRaw(const std::string& method, const std::string& paramsJson, RawResponseCallback callback);
+    
+    void callToolRaw(const std::string& name, const std::string& argumentsJson,
+                     std::function<void(const std::string& contentJson, const std::string& errorJson)> callback);
+                     
+    std::string callToolSyncRaw(const std::string& name, const std::string& argumentsJson,
+                                std::string* errorJsonOut = nullptr,
+                                std::chrono::milliseconds timeout = std::chrono::milliseconds(5000));
+
+    void setLogCallback(LogCallback callback);
+
     SessionState state() const { return m_state; }
 
 private:
@@ -195,6 +220,8 @@ private:
     void handleNotification(const json& notificationJson);
     void handleRequestFromServer(const json& requestJson);
 
+    void log(LogLevel level, const std::string& message);
+
     std::shared_ptr<IMcpTransport> m_transport;
     std::mutex m_mutex;
     int64_t m_nextId = 1;
@@ -202,6 +229,7 @@ private:
     std::unordered_map<int64_t, PendingRequest> m_pendingRequests;
     std::unordered_map<std::string, NotificationCallback> m_notificationHandlers;
     std::atomic<SessionState> m_state{SessionState::Uninitialized};
+    LogCallback m_logCallback;
 };
 
 } // namespace mcp

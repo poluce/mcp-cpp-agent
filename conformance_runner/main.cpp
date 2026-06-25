@@ -1,4 +1,5 @@
 #include <iostream>
+#include <cstdio>
 #include <memory>
 #include <chrono>
 #include <thread>
@@ -8,10 +9,24 @@
 #include "mcp_core/McpClientSession.h"
 #include "tests/common.h"
 
+#ifdef _WIN32
+#include <crtdbg.h>
+#endif
+
 // 声明外部的测试总入口
 void runAllLocalTests();
 
 int main(int argc, char* argv[]) {
+    std::setvbuf(stdout, NULL, _IONBF, 0);
+    std::setvbuf(stderr, NULL, _IONBF, 0);
+
+#ifdef _WIN32
+    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
+#endif
+
     bool isConformance = false;
     for (int i = 1; i < argc; ++i) {
         if (std::string(argv[i]) == "--scenario") {
