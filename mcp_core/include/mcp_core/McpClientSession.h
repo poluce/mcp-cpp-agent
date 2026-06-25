@@ -5,6 +5,7 @@
 #include <functional>
 #include <mutex>
 #include <atomic>
+#include <future>
 #include "IMcpTransport.h"
 #include "McpMessage.h"
 #include "McpTool.h"
@@ -146,6 +147,45 @@ public:
      * @brief Get a prompt template.
      */
     void getPrompt(const std::string& name, const json& arguments, std::function<void(const json& result, const json& error)> callback);
+
+    // ==========================================
+    // Synchronous Blocking APIs (Helper wrappers)
+    // ==========================================
+    
+    bool initializeSync(const std::string& clientName, const std::string& clientVersion,
+                        json* serverInfoOut = nullptr,
+                        std::chrono::milliseconds timeout = std::chrono::milliseconds(5000));
+
+    bool shutdownSync(std::chrono::milliseconds timeout = std::chrono::milliseconds(5000));
+
+    std::vector<McpTool> listToolsSync(std::chrono::milliseconds timeout = std::chrono::milliseconds(5000), json* errorOut = nullptr);
+    
+    std::vector<McpTool> listToolsSync(const std::string& cursor, std::string* nextCursorOut,
+                                       std::chrono::milliseconds timeout = std::chrono::milliseconds(5000), json* errorOut = nullptr);
+
+    json callToolSync(const std::string& name, const json& arguments,
+                      json* errorOut = nullptr,
+                      std::chrono::milliseconds timeout = std::chrono::milliseconds(5000));
+
+    json listResourcesSync(std::chrono::milliseconds timeout = std::chrono::milliseconds(5000), json* errorOut = nullptr);
+    
+    json listResourcesSync(const std::string& cursor, std::string* nextCursorOut,
+                           std::chrono::milliseconds timeout = std::chrono::milliseconds(5000), json* errorOut = nullptr);
+
+    json readResourceSync(const std::string& uri, json* errorOut = nullptr, std::chrono::milliseconds timeout = std::chrono::milliseconds(5000));
+
+    bool subscribeResourceSync(const std::string& uri, json* errorOut = nullptr, std::chrono::milliseconds timeout = std::chrono::milliseconds(5000));
+
+    bool unsubscribeResourceSync(const std::string& uri, json* errorOut = nullptr, std::chrono::milliseconds timeout = std::chrono::milliseconds(5000));
+
+    json listPromptsSync(std::chrono::milliseconds timeout = std::chrono::milliseconds(5000), json* errorOut = nullptr);
+    
+    json listPromptsSync(const std::string& cursor, std::string* nextCursorOut,
+                         std::chrono::milliseconds timeout = std::chrono::milliseconds(5000), json* errorOut = nullptr);
+
+    json getPromptSync(const std::string& name, const json& arguments,
+                       json* errorOut = nullptr,
+                       std::chrono::milliseconds timeout = std::chrono::milliseconds(5000));
 
     SessionState state() const { return m_state; }
 

@@ -372,6 +372,45 @@ void runLocalToolsTests() {
         std::cout << "[✓] Scenario 3: Standard tools/call exceptions and application-level isError mapping\n";
     }
 
+    // ----------------------------------------------------
+    // Scenario 4: Synchronous API blocking calls (同步阻塞式 API 校验)
+    // ----------------------------------------------------
+    {
+        auto transport = std::make_shared<MockTransport>();
+        auto session = std::make_shared<mcp::McpClientSession>(transport);
+        session->init();
+        session->start();
+
+        std::thread serverThread([&]() {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            mcp::json initResp = {
+                {"jsonrpc", "2.0"}, {"id", 1},
+                {"result", {{"protocolVersion", mcp::McpClientSession::MCP_PROTOCOL_VERSION}, {"capabilities", mcp::json::object()}, {"serverInfo", mcp::json::object()}}}
+            };
+            transport->pushServerMessage(initResp.dump());
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            mcp::json toolsResp = {
+                {"jsonrpc", "2.0"}, {"id", 2},
+                {"result", {
+                    {"tools", mcp::json::array({
+                        {{"name", "sync_tool"}, {"description", "sync"}, {"inputSchema", mcp::json::object()}}
+                    })}
+                }}
+            };
+            transport->pushServerMessage(toolsResp.dump());
+        });
+
+        bool initSuccess = session->initializeSync("sync-client", "1.0.0");
+        assert(initSuccess && "Sync initialize failed.");
+
+        auto tools = session->listToolsSync();
+        assert(tools.size() == 1 && tools[0].name == "sync_tool" && "Sync listTools failed.");
+
+        serverThread.join();
+        std::cout << "[✓] Scenario 4: Synchronous API blocking call and response validation\n";
+    }
+
     std::cout << "\n========================================\n";
     std::cout << "  🎉 🎉 🎉 All Tools self-tests PASSED!\n";
     std::cout << "========================================\n";

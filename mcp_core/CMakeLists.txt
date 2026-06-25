@@ -11,5 +11,37 @@ target_include_directories(mcp_core PUBLIC
 )
 
 target_link_libraries(mcp_core PUBLIC
-    nlohmann_json::nlohmann_json
+    $<BUILD_INTERFACE:nlohmann_json::nlohmann_json>
+)
+
+install(TARGETS mcp_core
+    EXPORT mcp_coreTargets
+    LIBRARY DESTINATION lib
+    ARCHIVE DESTINATION lib
+    RUNTIME DESTINATION bin
+)
+
+install(DIRECTORY include/mcp_core DESTINATION include)
+
+install(EXPORT mcp_coreTargets
+    FILE mcp_coreTargets.cmake
+    NAMESPACE mcp::
+    DESTINATION lib/cmake/mcp_core
+)
+
+include(CMakePackageConfigHelpers)
+configure_package_config_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/mcp_coreConfig.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/mcp_coreConfig.cmake
+    INSTALL_DESTINATION lib/cmake/mcp_core
+)
+write_basic_package_version_file(
+    ${CMAKE_CURRENT_BINARY_DIR}/mcp_coreConfigVersion.cmake
+    VERSION 1.0.0
+    COMPATIBILITY SameMajorVersion
+)
+install(FILES
+    ${CMAKE_CURRENT_BINARY_DIR}/mcp_coreConfig.cmake
+    ${CMAKE_CURRENT_BINARY_DIR}/mcp_coreConfigVersion.cmake
+    DESTINATION lib/cmake/mcp_core
 )

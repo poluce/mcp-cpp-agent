@@ -1,0 +1,7 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+# 寻找 nlohmann_json 依赖，确保使用者项目能级联找到 JSON 依赖库
+find_dependency(nlohmann_json REQUIRED)
+
+include("${CMAKE_CURRENT_LIST_DIR}/mcp_coreTargets.cmake")
