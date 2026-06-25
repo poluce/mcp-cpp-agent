@@ -1,4 +1,6 @@
 add_library(mcp_core STATIC
+    include/mcp_core/ConsoleStdioTransport.h
+    src/ConsoleStdioTransport.cpp
     src/JsonRpcDispatcher.cpp
     src/McpClientSession.cpp
 )
