@@ -719,6 +719,171 @@ void runLocalResourcesAndPromptsTests() {
     std::cout << "==================================================\n";
 }
 
+void runLocalErrorTests() {
+    std::cout << "\n==================================================\n";
+    std::cout << "  C++ MCP SDK Error Handling & Defensiveness Local Test Suite\n";
+    std::cout << "==================================================\n\n";
+
+    // ----------------------------------------------------
+    // Scenario 1: JSON Parsing error (Robustness check)
+    // ----------------------------------------------------
+    {
+        auto transport = std::make_shared<MockTransport>();
+        auto session = std::make_shared<mcp::McpClientSession>(transport);
+        session->init();
+        session->start();
+
+        try {
+            transport->pushServerMessage("{invalid json: error");
+            transport->pushServerMessage("");
+            transport->pushServerMessage("   ");
+            transport->pushServerMessage("[]");
+        } catch (...) {
+            assert(false && "Scenario 1 Failed: Incoming malformed JSON or empty message crashed the client.");
+        }
+        std::cout << "[✓] Scenario 1: Malformed JSON packet parsing defensiveness\n";
+    }
+
+    // ----------------------------------------------------
+    // Scenario 2: Server-side unknown method request (Auto reply Method not found)
+    // ----------------------------------------------------
+    {
+        auto transport = std::make_shared<MockTransport>();
+        auto session = std::make_shared<mcp::McpClientSession>(transport);
+        session->init();
+        session->start();
+
+        bool methodNotFoundSent = false;
+        transport->onSendCallback = [&](const std::string& msg) {
+            try {
+                mcp::json j = mcp::json::parse(msg);
+                if (j.contains("error") && j["error"]["code"] == -32601) {
+                    methodNotFoundSent = true;
+                }
+            } catch (...) {}
+        };
+
+        mcp::json unknownReq = {
+            {"jsonrpc", "2.0"},
+            {"id", 888},
+            {"method", "custom/unsupportedMethod"},
+            {"params", mcp::json::object()}
+        };
+        transport->pushServerMessage(unknownReq.dump());
+
+        assert(methodNotFoundSent && "Scenario 2 Failed: Client did not reply with Method not found (-32601) error.");
+        std::cout << "[✓] Scenario 2: Handle server-side unknown method requests\n";
+    }
+
+    // ----------------------------------------------------
+    // Scenario 3: Unknown / Mismatched Response ID (Fault isolation)
+    // ----------------------------------------------------
+    {
+        auto transport = std::make_shared<MockTransport>();
+        auto session = std::make_shared<mcp::McpClientSession>(transport);
+        session->init();
+        session->start();
+
+        try {
+            mcp::json unknownResp = {
+                {"jsonrpc", "2.0"},
+                {"id", 99999},
+                {"result", {{"status", "ignored"}}}
+            };
+            transport->pushServerMessage(unknownResp.dump());
+
+            mcp::json invalidIdResp = {
+                {"jsonrpc", "2.0"},
+                {"id", mcp::json::array({1, 2})},
+                {"result", {{"status", "ignored"}}}
+            };
+            transport->pushServerMessage(invalidIdResp.dump());
+        } catch (...) {
+            assert(false && "Scenario 3 Failed: Client crashed on unknown or malformed response id.");
+        }
+        std::cout << "[✓] Scenario 3: Ignore unknown or type-mismatched response IDs (Crash prevention)\n";
+    }
+
+    // ----------------------------------------------------
+    // Scenario 4: Request Timeout check and Lazy cleanup
+    // ----------------------------------------------------
+    {
+        auto transport = std::make_shared<MockTransport>();
+        auto session = std::make_shared<mcp::McpClientSession>(transport);
+        session->init();
+        session->start();
+
+        session->initialize("test", "1", [](bool, const mcp::json&){});
+        mcp::json initResp = {
+            {"jsonrpc", "2.0"}, {"id", 1},
+            {"result", {{"protocolVersion", mcp::McpClientSession::MCP_PROTOCOL_VERSION}, {"capabilities", mcp::json::object()}, {"serverInfo", mcp::json::object()}}}
+        };
+        transport->pushServerMessage(initResp.dump());
+
+        bool timeoutTriggered = false;
+        session->listTools([&](const std::vector<mcp::McpTool>&, const mcp::json& error) {
+            if (!error.empty() && error.contains("code") && error["code"] == -32001) {
+                timeoutTriggered = true;
+            }
+        });
+
+        assert(!timeoutTriggered && "Scenario 4 Failed: Timeout triggered prematurely.");
+
+        session->checkRequestTimeouts(std::chrono::milliseconds(0));
+
+        assert(timeoutTriggered && "Scenario 4 Failed: Request was not timed out properly.");
+        std::cout << "[✓] Scenario 4: Scan and invoke callbacks for timed out requests\n";
+    }
+
+    // ----------------------------------------------------
+    // Scenario 5: Active Cancellation and notification
+    // ----------------------------------------------------
+    {
+        auto transport = std::make_shared<MockTransport>();
+        auto session = std::make_shared<mcp::McpClientSession>(transport);
+        session->init();
+        session->start();
+
+        session->initialize("test", "1", [](bool, const mcp::json&){});
+        mcp::json initResp = {
+            {"jsonrpc", "2.0"}, {"id", 1},
+            {"result", {{"protocolVersion", mcp::McpClientSession::MCP_PROTOCOL_VERSION}, {"capabilities", mcp::json::object()}, {"serverInfo", mcp::json::object()}}}
+        };
+        transport->pushServerMessage(initResp.dump());
+
+        bool cancelledCallbackTriggered = false;
+        bool cancelledNotificationSent = false;
+        int64_t reqId = 0;
+
+        transport->onSendCallback = [&](const std::string& msg) {
+            try {
+                mcp::json j = mcp::json::parse(msg);
+                if (j.contains("method") && j["method"] == "notifications/cancelled") {
+                    if (j.contains("params") && j["params"]["requestId"] == reqId) {
+                        cancelledNotificationSent = true;
+                    }
+                }
+            } catch (...) {}
+        };
+
+        reqId = session->sendRequest("tools/call", {{"name", "calculate_add"}}, [&](const mcp::json&, const mcp::json& error) {
+            if (!error.empty() && error.contains("code") && error["code"] == -32000) {
+                cancelledCallbackTriggered = true;
+            }
+        });
+
+        session->cancelRequest(reqId);
+
+        assert(cancelledCallbackTriggered && "Scenario 5 Failed: Cancelled callback was not triggered with cancel code.");
+        assert(cancelledNotificationSent && "Scenario 5 Failed: notifications/cancelled protocol message not sent.");
+        std::cout << "[✓] Scenario 5: Active cancellation locally and remote protocol notification\n";
+    }
+
+    std::cout << "\n==================================================\n";
+    std::cout << "  🎉 🎉 🎉 All Error Handling self-tests PASSED!\n";
+    std::cout << "==================================================\n";
+}
+
 int main(int argc, char* argv[]) {
     bool isConformance = false;
     for (int i = 1; i < argc; ++i) {
@@ -729,7 +894,6 @@ int main(int argc, char* argv[]) {
     }
 
     if (isConformance) {
-        // Standard Stdio Conformance Flow (Scenario verification)
         auto transport = std::make_shared<mcp::ConsoleStdioTransport>();
         auto session = std::make_shared<mcp::McpClientSession>(transport);
 
@@ -762,10 +926,10 @@ int main(int argc, char* argv[]) {
         cv.wait_for(lock, std::chrono::seconds(8), [&]{ return finished; });
         session->close();
     } else {
-        // Local lifecycle, tools, resources & prompts testing suite
         runLocalLifecycleTests();
         runLocalToolsTests();
         runLocalResourcesAndPromptsTests();
+        runLocalErrorTests();
     }
     return 0;
 }

@@ -42,6 +42,16 @@ const ALL_TOOLS = [
       type: "object",
       properties: {}
     }
+  },
+  {
+    name: "delay_timeout",
+    description: "延迟响应的测试工具",
+    inputSchema: {
+      type: "object",
+      properties: {
+        delayMs: { type: "number", description: "延迟的毫秒数" }
+      }
+    }
   }
 ];
 
@@ -101,7 +111,43 @@ const ALL_PROMPTS = [
 
 // 核心 JSON-RPC 处理逻辑，由 Stdio 与 HTTP/SSE 共用
 function processMcpRequest(request) {
-  const { id, method, params } = request;
+  if (typeof request !== 'object' || request === null) {
+    return {
+      jsonrpc: "2.0",
+      id: null,
+      error: { code: -32600, message: "Invalid Request: Payload must be a JSON object" }
+    };
+  }
+
+  const { id, method, params, jsonrpc } = request;
+
+  // 1. 校验 jsonrpc 协议版本
+  if (jsonrpc !== "2.0") {
+    return {
+      jsonrpc: "2.0",
+      id: id !== undefined ? id : null,
+      error: { code: -32600, message: "Invalid Request: Missing or invalid jsonrpc version" }
+    };
+  }
+
+  // 2. 校验 id 类型是否合法
+  if (id !== undefined && id !== null && typeof id !== 'number' && typeof id !== 'string') {
+    return {
+      jsonrpc: "2.0",
+      id: null,
+      error: { code: -32600, message: "Invalid Request: id must be a string, number, or null" }
+    };
+  }
+
+  // 3. 校验 method 是否合法
+  if (method === undefined || typeof method !== 'string') {
+    return {
+      jsonrpc: "2.0",
+      id: id !== undefined ? id : null,
+      error: { code: -32600, message: "Invalid Request: method is required and must be a string" }
+    };
+  }
+
   if (id === undefined) return null; // 忽略通知
 
   let response = {
@@ -173,6 +219,29 @@ function processMcpRequest(request) {
         content: [{ type: "text", text: "触发测试异常：数据库连接失败。" }],
         isError: true
       };
+    } else if (toolName === 'delay_timeout') {
+      const delayMs = args && args.delayMs !== undefined ? Number(args.delayMs) : 10000;
+      setTimeout(() => {
+        const delayedResponse = {
+          jsonrpc: "2.0",
+          id: id,
+          result: {
+            content: [{ type: "text", text: `延迟了 ${delayMs} 毫秒的响应` }]
+          }
+        };
+        if (isHttp) {
+          const session = activeSessions.get(sessionId);
+          if (session) {
+            session.eventId++;
+            session.res.write(`id: ${session.eventId}\n`);
+            session.res.write(`event: message\n`);
+            session.res.write(`data: ${JSON.stringify(delayedResponse)}\n\n`);
+          }
+        } else {
+          process.stdout.write(JSON.stringify(delayedResponse) + "\n");
+        }
+      }, delayMs);
+      return null; // 异步响应，现在不返回
     } else {
       response.error = { code: -32601, message: `Tool not found: ${toolName}` };
     }
@@ -506,7 +575,12 @@ if (isHttp) {
         process.stdout.write(JSON.stringify(response) + "\n");
       }
     } catch (err) {
-      process.stderr.write(`Error: ${err.message}\n`);
+      const parseErrorResponse = {
+        jsonrpc: "2.0",
+        id: null,
+        error: { code: -32700, message: "Parse error: " + err.message }
+      };
+      process.stdout.write(JSON.stringify(parseErrorResponse) + "\n");
     }
   });
 }

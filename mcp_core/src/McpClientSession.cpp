@@ -31,7 +31,10 @@ int64_t McpClientSession::sendRequest(const std::string& method, const json& par
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         id = m_nextId++;
-        m_pendingRequests[id] = callback;
+        m_pendingRequests[id] = PendingRequest{
+            std::move(callback),
+            std::chrono::steady_clock::now()
+        };
     }
 
     json requestMsg = {
@@ -84,6 +87,12 @@ void McpClientSession::handleResponse(const json& responseJson) {
     int64_t id = 0;
     if (responseJson["id"].is_number_integer()) {
         id = responseJson["id"].get<int64_t>();
+    } else if (responseJson["id"].is_string()) {
+        try {
+            id = std::stoll(responseJson["id"].get<std::string>());
+        } catch (...) {
+            return; 
+        }
     } else {
         return; 
     }
@@ -93,7 +102,7 @@ void McpClientSession::handleResponse(const json& responseJson) {
         std::lock_guard<std::mutex> lock(m_mutex);
         auto it = m_pendingRequests.find(id);
         if (it != m_pendingRequests.end()) {
-            cb = std::move(it->second);
+            cb = std::move(it->second.callback);
             m_pendingRequests.erase(it);
         }
     }
@@ -425,6 +434,57 @@ void McpClientSession::getPrompt(const std::string& name, const json& arguments,
     sendRequest("prompts/get", params, [callback](const json& result, const json& error) {
         callback(result, error);
     });
+}
+
+void McpClientSession::cancelRequest(int64_t requestId) {
+    ResponseCallback cb;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        auto it = m_pendingRequests.find(requestId);
+        if (it != m_pendingRequests.end()) {
+            cb = std::move(it->second.callback);
+            m_pendingRequests.erase(it);
+        }
+    }
+    if (cb) {
+        json cancelErr = {
+            {"code", -32000},
+            {"message", "Request cancelled locally"}
+        };
+        cb(json::object(), cancelErr);
+    }
+
+    json params = {
+        {"requestId", requestId}
+    };
+    sendNotification("notifications/cancelled", params);
+}
+
+void McpClientSession::checkRequestTimeouts(std::chrono::milliseconds timeoutLimit) {
+    std::vector<std::pair<int64_t, ResponseCallback>> expiredRequests;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        auto now = std::chrono::steady_clock::now();
+        for (auto it = m_pendingRequests.begin(); it != m_pendingRequests.end(); ) {
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - it->second.timestamp);
+            if (elapsed >= timeoutLimit) {
+                expiredRequests.push_back({it->first, std::move(it->second.callback)});
+                it = m_pendingRequests.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    for (auto& pair : expiredRequests) {
+        if (pair.second) {
+            json timeoutErr = {
+                {"code", -32001},
+                {"message", "Request timeout"}
+            };
+            pair.second(json::object(), timeoutErr);
+        }
+    }
 }
 
 } // namespace mcp

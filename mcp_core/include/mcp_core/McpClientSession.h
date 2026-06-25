@@ -31,6 +31,11 @@ public:
     using ResponseCallback = std::function<void(const json& result, const json& error)>;
     using NotificationCallback = std::function<void(const json& params)>;
 
+    struct PendingRequest {
+        ResponseCallback callback;
+        std::chrono::steady_clock::time_point timestamp;
+    };
+
     explicit McpClientSession(std::shared_ptr<IMcpTransport> transport);
     ~McpClientSession();
 
@@ -54,6 +59,16 @@ public:
      * @return The request ID.
      */
     int64_t sendRequest(const std::string& method, const json& params, ResponseCallback callback);
+
+    /**
+     * @brief Active cancellation of a pending request by ID.
+     */
+    void cancelRequest(int64_t requestId);
+
+    /**
+     * @brief Scan and clean up pending requests that have timed out.
+     */
+    void checkRequestTimeouts(std::chrono::milliseconds timeoutLimit = std::chrono::milliseconds(5000));
 
     /**
      * @brief Send a JSON-RPC notification.
@@ -144,7 +159,7 @@ private:
     std::mutex m_mutex;
     int64_t m_nextId = 1;
     
-    std::unordered_map<int64_t, ResponseCallback> m_pendingRequests;
+    std::unordered_map<int64_t, PendingRequest> m_pendingRequests;
     std::unordered_map<std::string, NotificationCallback> m_notificationHandlers;
     std::atomic<SessionState> m_state{SessionState::Uninitialized};
 };
