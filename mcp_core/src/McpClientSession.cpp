@@ -140,6 +140,16 @@ void McpClientSession::handleRequestFromServer(const json& requestJson) {
 
 void McpClientSession::initialize(const std::string& clientName, const std::string& clientVersion,
                                   std::function<void(bool success, const json& serverInfo)> callback) {
+    SessionState expected = SessionState::Uninitialized;
+    if (!m_state.compare_exchange_strong(expected, SessionState::Initializing)) {
+        json err = {
+            {"code", -32600},
+            {"message", "Initialize already in progress or completed"}
+        };
+        callback(false, err);
+        return;
+    }
+
     json params = {
         {"protocolVersion", MCP_PROTOCOL_VERSION},
         {"capabilities", {
@@ -155,8 +165,25 @@ void McpClientSession::initialize(const std::string& clientName, const std::stri
     auto self = shared_from_this();
     sendRequest("initialize", params, [self, callback](const json& result, const json& error) {
         if (!error.empty()) {
+            self->m_state = SessionState::Uninitialized; 
             callback(false, error);
         } else {
+            std::string serverVer;
+            if (result.contains("protocolVersion") && result["protocolVersion"].is_string()) {
+                serverVer = result["protocolVersion"].get<std::string>();
+            }
+
+            if (serverVer != MCP_PROTOCOL_VERSION) {
+                self->m_state = SessionState::Uninitialized; 
+                json verErr = {
+                    {"code", -32002},
+                    {"message", "Version Mismatch: Server returned unsupported version " + serverVer}
+                };
+                callback(false, verErr);
+                return;
+            }
+
+            self->m_state = SessionState::Initialized;
             self->sendNotification("notifications/initialized", json::object());
             callback(true, result);
         }
@@ -164,16 +191,30 @@ void McpClientSession::initialize(const std::string& clientName, const std::stri
 }
 
 void McpClientSession::shutdown(std::function<void(bool success)> callback) {
-    sendRequest("shutdown", json::object(), [callback](const json& result, const json& error) {
+    if (m_state != SessionState::Initialized) {
+        callback(false);
+        return;
+    }
+    auto self = shared_from_this();
+    sendRequest("shutdown", json::object(), [self, callback](const json& result, const json& error) {
         if (!error.empty()) {
             callback(false);
         } else {
+            self->m_state = SessionState::Shutdown;
             callback(true);
         }
     });
 }
 
 void McpClientSession::listTools(std::function<void(const std::vector<McpTool>& tools, const json& error)> callback) {
+    if (m_state != SessionState::Initialized) {
+        json err = {
+            {"code", -32002},
+            {"message", "Session not initialized"}
+        };
+        callback({}, err);
+        return;
+    }
     sendRequest("tools/list", json::object(), [callback](const json& result, const json& error) {
         if (!error.empty()) {
             callback({}, error);
@@ -191,6 +232,14 @@ void McpClientSession::listTools(std::function<void(const std::vector<McpTool>& 
 
 void McpClientSession::callTool(const std::string& name, const json& arguments,
                               std::function<void(const json& content, const json& error)> callback) {
+    if (m_state != SessionState::Initialized) {
+        json err = {
+            {"code", -32002},
+            {"message", "Session not initialized"}
+        };
+        callback(json::object(), err);
+        return;
+    }
     json params = {
         {"name", name},
         {"arguments", arguments}
@@ -206,12 +255,28 @@ void McpClientSession::callTool(const std::string& name, const json& arguments,
 }
 
 void McpClientSession::listResources(std::function<void(const json& result, const json& error)> callback) {
+    if (m_state != SessionState::Initialized) {
+        json err = {
+            {"code", -32002},
+            {"message", "Session not initialized"}
+        };
+        callback(json::object(), err);
+        return;
+    }
     sendRequest("resources/list", json::object(), [callback](const json& result, const json& error) {
         callback(result, error);
     });
 }
 
 void McpClientSession::readResource(const std::string& uri, std::function<void(const json& result, const json& error)> callback) {
+    if (m_state != SessionState::Initialized) {
+        json err = {
+            {"code", -32002},
+            {"message", "Session not initialized"}
+        };
+        callback(json::object(), err);
+        return;
+    }
     json params = {
         {"uri", uri}
     };
@@ -221,12 +286,28 @@ void McpClientSession::readResource(const std::string& uri, std::function<void(c
 }
 
 void McpClientSession::listPrompts(std::function<void(const json& result, const json& error)> callback) {
+    if (m_state != SessionState::Initialized) {
+        json err = {
+            {"code", -32002},
+            {"message", "Session not initialized"}
+        };
+        callback(json::object(), err);
+        return;
+    }
     sendRequest("prompts/list", json::object(), [callback](const json& result, const json& error) {
         callback(result, error);
     });
 }
 
 void McpClientSession::getPrompt(const std::string& name, const json& arguments, std::function<void(const json& result, const json& error)> callback) {
+    if (m_state != SessionState::Initialized) {
+        json err = {
+            {"code", -32002},
+            {"message", "Session not initialized"}
+        };
+        callback(json::object(), err);
+        return;
+    }
     json params = {
         {"name", name},
         {"arguments", arguments}

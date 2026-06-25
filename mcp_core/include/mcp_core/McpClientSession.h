@@ -4,11 +4,19 @@
 #include <unordered_map>
 #include <functional>
 #include <mutex>
+#include <atomic>
 #include "IMcpTransport.h"
 #include "McpMessage.h"
 #include "McpTool.h"
 
 namespace mcp {
+
+enum class SessionState {
+    Uninitialized,
+    Initializing,
+    Initialized,
+    Shutdown
+};
 
 /**
  * @brief Manages a Model Context Protocol Client Session.
@@ -99,6 +107,8 @@ public:
      */
     void getPrompt(const std::string& name, const json& arguments, std::function<void(const json& result, const json& error)> callback);
 
+    SessionState state() const { return m_state; }
+
 private:
     void handleIncomingMessage(const std::string& rawMessage);
     void handleResponse(const json& responseJson);
@@ -111,6 +121,7 @@ private:
     
     std::unordered_map<int64_t, ResponseCallback> m_pendingRequests;
     std::unordered_map<std::string, NotificationCallback> m_notificationHandlers;
+    std::atomic<SessionState> m_state{SessionState::Uninitialized};
 };
 
 } // namespace mcp
