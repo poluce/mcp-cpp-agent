@@ -5,7 +5,7 @@ const url = require('url');
 
 const isHttp = process.argv.includes('--http');
 
-// 支持的工具列表
+// 支持的全部工具列表
 const ALL_TOOLS = [
   {
     name: "calculate_add",
@@ -45,8 +45,8 @@ const ALL_TOOLS = [
   }
 ];
 
-// 支持的资源列表
-const RESOURCES = [
+// 支持的全部资源列表
+const ALL_RESOURCES = [
   {
     uri: "file:///logs/system.log",
     name: "系统日志文件",
@@ -58,11 +58,29 @@ const RESOURCES = [
     name: "应用配置文件",
     mimeType: "application/json",
     description: "本地调试应用的配置文件"
+  },
+  {
+    uri: "file:///configs/admin.json",
+    name: "系统管理员配置文件",
+    mimeType: "application/json",
+    description: "受保护的管理员机密配置（权限测试用）"
+  },
+  {
+    uri: "file:///logs/huge.log",
+    name: "巨大日志文件",
+    mimeType: "text/plain",
+    description: "用于压力测试的大型文本资源（大文件测试用）"
+  },
+  {
+    uri: "file:///assets/logo.png",
+    name: "二进制标志图像",
+    mimeType: "image/png",
+    description: "MCP 的官方标志图片（二进制/MIME测试用）"
   }
 ];
 
-// 支持的提示词模版
-const PROMPTS = [
+// 支持的全部提示词模版
+const ALL_PROMPTS = [
   {
     name: "code_review",
     description: "对指定的 C++ 代码进行静态分析和代码审查",
@@ -73,6 +91,11 @@ const PROMPTS = [
         required: true
       }
     ]
+  },
+  {
+    name: "rich_prompt",
+    description: "测试包含文本、图像和内嵌资源的富媒体提示词模版",
+    arguments: []
   }
 ];
 
@@ -91,8 +114,8 @@ function processMcpRequest(request) {
       protocolVersion: "2025-11-25",
       capabilities: {
         tools: { listChanged: false },
-        resources: { subscribe: false },
-        prompts: { listChanged: false }
+        resources: { subscribe: true, listChanged: true },
+        prompts: { listChanged: true }
       },
       serverInfo: {
         name: "mock-test-server",
@@ -154,10 +177,24 @@ function processMcpRequest(request) {
       response.error = { code: -32601, message: `Tool not found: ${toolName}` };
     }
   } else if (method === 'resources/list') {
-    response.result = { resources: RESOURCES };
+    const cursor = params ? params.cursor : undefined;
+    if (!cursor) {
+      response.result = {
+        resources: ALL_RESOURCES.slice(0, 3),
+        nextCursor: "res_page_2"
+      };
+    } else if (cursor === "res_page_2") {
+      response.result = {
+        resources: ALL_RESOURCES.slice(3)
+      };
+    } else {
+      response.error = { code: -32602, message: `Invalid cursor: ${cursor}` };
+    }
   } else if (method === 'resources/read') {
-    const uri = params.uri;
-    if (uri === "file:///logs/system.log") {
+    const uri = params ? params.uri : undefined;
+    if (!uri) {
+      response.error = { code: -32602, message: "Missing required parameter: uri" };
+    } else if (uri === "file:///logs/system.log") {
       response.result = {
         contents: [{
           uri: uri,
@@ -173,23 +210,99 @@ function processMcpRequest(request) {
           text: "{\n  \"env\": \"test\",\n  \"debug\": true\n}"
         }]
       };
+    } else if (uri === "file:///configs/admin.json") {
+      // 权限不足校验
+      response.error = {
+        code: -32000,
+        message: "Permission Denied: admin config requires root privileges"
+      };
+    } else if (uri === "file:///logs/huge.log") {
+      // 大文件校验 (2MB)
+      response.result = {
+        contents: [{
+          uri: uri,
+          mimeType: "text/plain",
+          text: "H".repeat(2 * 1024 * 1024)
+        }]
+      };
+    } else if (uri === "file:///assets/logo.png") {
+      // 二进制资源与 MIME type 校验
+      response.result = {
+        contents: [{
+          uri: uri,
+          mimeType: "image/png",
+          blob: "iVBORw0KGgoAAAANSUhEUgAAAAUAAAAFCAYAAACNbyblAAAAHElEQVQI12P4//8/w38GIAXDIBKE0DHxgljNBAAO9TXL0Y4OHwAAAABJRU5ErkJggg=="
+        }]
+      };
     } else {
       response.error = { code: -32602, message: `Resource not found: ${uri}` };
     }
+  } else if (method === 'resources/subscribe') {
+    response.result = {}; // 订阅成功返回空结果
+  } else if (method === 'resources/unsubscribe') {
+    response.result = {}; // 取消订阅成功返回空结果
   } else if (method === 'prompts/list') {
-    response.result = { prompts: PROMPTS };
-  } else if (method === 'prompts/get') {
-    const name = params.name;
-    const args = params.arguments || {};
-    if (name === 'code_review') {
+    const cursor = params ? params.cursor : undefined;
+    if (!cursor) {
       response.result = {
-        description: "代码审查指令模板",
+        prompts: ALL_PROMPTS.slice(0, 1),
+        nextCursor: "prompt_page_2"
+      };
+    } else if (cursor === "prompt_page_2") {
+      response.result = {
+        prompts: ALL_PROMPTS.slice(1)
+      };
+    } else {
+      response.error = { code: -32602, message: `Invalid cursor: ${cursor}` };
+    }
+  } else if (method === 'prompts/get') {
+    const name = params ? params.name : undefined;
+    const args = params ? params.arguments || {} : {};
+    
+    if (!name) {
+      response.error = { code: -32602, message: "Missing required parameter: name" };
+    } else if (name === 'code_review') {
+      const codeArg = args.code;
+      if (codeArg === undefined) {
+        response.error = { code: -32602, message: "Missing required argument: code" };
+      } else if (typeof codeArg !== 'string') {
+        response.error = { code: -32602, message: "Argument 'code' must be a string" };
+      } else {
+        response.result = {
+          description: "代码审查指令模板",
+          messages: [{
+            role: "user",
+            content: {
+              type: "text",
+              text: `请帮我审查以下 C++ 代码，指出其潜在的内存泄漏或性能风险：\n\n${codeArg}`
+            }
+          }]
+        };
+      }
+    } else if (name === 'rich_prompt') {
+      // 复合多介质返回：text content, image content, embedded resource content
+      response.result = {
+        description: "复合提示词结果",
         messages: [{
-          role: "user",
-          content: {
-            type: "text",
-            text: `请帮我审查以下 C++ 代码，指出其潜在的内存泄漏或性能风险：\n\n${args.code || "(未提供代码)"}`
-          }
+          role: "assistant",
+          content: [
+            {
+              type: "text",
+              text: "这里是一个包含多种内容的提示词回复："
+            },
+            {
+              type: "image",
+              data: "iVBORw0KGgoAAAANSUhEUgAAAAUAAAAFCAYAAACNbyblAAAAHElEQVQI12P4//8/w38GIAXDIBKE0DHxgljNBAAO9TXL0Y4OHwAAAABJRU5ErkJggg==",
+              mimeType: "image/png"
+            },
+            {
+              type: "resource",
+              resource: {
+                uri: "file:///logs/system.log",
+                text: "[Embedded Log] System is running in perfect condition."
+              }
+            }
+          ]
         }]
       };
     } else {
@@ -311,10 +424,39 @@ if (isHttp) {
             });
             res.end();
 
-            // 特殊测试钩子：触发意外断线以验证客户端自动重连
+            // 特殊测试钩子 A：触发意外断线以验证客户端自动重连
             if (request && request.method === 'test/trigger_disconnect') {
               console.error(`[Server] Triggering manual SSE disconnect for session ${sessionId} as requested.`);
               session.res.end();
+              return;
+            }
+
+            // 特殊测试钩子 B：向客户端发送资源更新变更通知
+            if (request && request.method === 'test/trigger_resource_update') {
+              const targetUri = request.params ? request.params.uri : "file:///logs/system.log";
+              console.error(`[Server] Triggering resources/updated notification for ${targetUri}`);
+              session.eventId++;
+              session.res.write(`id: ${session.eventId}\n`);
+              session.res.write(`event: message\n`);
+              session.res.write(`data: ${JSON.stringify({
+                jsonrpc: "2.0",
+                method: "notifications/resources/updated",
+                params: { uri: targetUri }
+              })}\n\n`);
+              return;
+            }
+
+            // 特殊测试钩子 C：向客户端发送提示词变更通知
+            if (request && request.method === 'test/trigger_prompts_changed') {
+              console.error(`[Server] Triggering prompts/list-changed notification`);
+              session.eventId++;
+              session.res.write(`id: ${session.eventId}\n`);
+              session.res.write(`event: message\n`);
+              session.res.write(`data: ${JSON.stringify({
+                jsonrpc: "2.0",
+                method: "notifications/prompts/list-changed",
+                params: {}
+              })}\n\n`);
               return;
             }
 

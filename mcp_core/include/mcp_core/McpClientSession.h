@@ -98,14 +98,34 @@ public:
     void listResources(std::function<void(const json& result, const json& error)> callback);
 
     /**
+     * @brief List the resources exposed by the MCP server with pagination cursor.
+     */
+    void listResources(const std::string& cursor, std::function<void(const json& result, const std::string& nextCursor, const json& error)> callback);
+
+    /**
      * @brief Read a resource content.
      */
     void readResource(const std::string& uri, std::function<void(const json& result, const json& error)> callback);
 
     /**
+     * @brief Subscribe to a resource.
+     */
+    void subscribeResource(const std::string& uri, std::function<void(bool success, const json& error)> callback);
+
+    /**
+     * @brief Unsubscribe from a resource.
+     */
+    void unsubscribeResource(const std::string& uri, std::function<void(bool success, const json& error)> callback);
+
+    /**
      * @brief List the prompts exposed by the MCP server.
      */
     void listPrompts(std::function<void(const json& result, const json& error)> callback);
+
+    /**
+     * @brief List the prompts exposed by the MCP server with pagination cursor.
+     */
+    void listPrompts(const std::string& cursor, std::function<void(const json& result, const std::string& nextCursor, const json& error)> callback);
 
     /**
      * @brief Get a prompt template.

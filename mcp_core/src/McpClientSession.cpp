@@ -287,16 +287,34 @@ void McpClientSession::callTool(const std::string& name, const json& arguments,
 }
 
 void McpClientSession::listResources(std::function<void(const json& result, const json& error)> callback) {
+    listResources("", [callback](const json& result, const std::string&, const json& error) {
+        callback(result, error);
+    });
+}
+
+void McpClientSession::listResources(const std::string& cursor, std::function<void(const json& result, const std::string& nextCursor, const json& error)> callback) {
     if (m_state != SessionState::Initialized) {
         json err = {
             {"code", -32002},
             {"message", "Session not initialized"}
         };
-        callback(json::object(), err);
+        callback(json::object(), "", err);
         return;
     }
-    sendRequest("resources/list", json::object(), [callback](const json& result, const json& error) {
-        callback(result, error);
+    json params = json::object();
+    if (!cursor.empty()) {
+        params["cursor"] = cursor;
+    }
+    sendRequest("resources/list", params, [callback](const json& result, const json& error) {
+        if (!error.empty()) {
+            callback(json::object(), "", error);
+        } else {
+            std::string nextCursor;
+            if (result.contains("nextCursor") && result["nextCursor"].is_string()) {
+                nextCursor = result["nextCursor"].get<std::string>();
+            }
+            callback(result, nextCursor, json::object());
+        }
     });
 }
 
@@ -317,17 +335,77 @@ void McpClientSession::readResource(const std::string& uri, std::function<void(c
     });
 }
 
-void McpClientSession::listPrompts(std::function<void(const json& result, const json& error)> callback) {
+void McpClientSession::subscribeResource(const std::string& uri, std::function<void(bool success, const json& error)> callback) {
     if (m_state != SessionState::Initialized) {
         json err = {
             {"code", -32002},
             {"message", "Session not initialized"}
         };
-        callback(json::object(), err);
+        callback(false, err);
         return;
     }
-    sendRequest("prompts/list", json::object(), [callback](const json& result, const json& error) {
+    json params = {
+        {"uri", uri}
+    };
+    sendRequest("resources/subscribe", params, [callback](const json&, const json& error) {
+        if (!error.empty()) {
+            callback(false, error);
+        } else {
+            callback(true, json::object());
+        }
+    });
+}
+
+void McpClientSession::unsubscribeResource(const std::string& uri, std::function<void(bool success, const json& error)> callback) {
+    if (m_state != SessionState::Initialized) {
+        json err = {
+            {"code", -32002},
+            {"message", "Session not initialized"}
+        };
+        callback(false, err);
+        return;
+    }
+    json params = {
+        {"uri", uri}
+    };
+    sendRequest("resources/unsubscribe", params, [callback](const json&, const json& error) {
+        if (!error.empty()) {
+            callback(false, error);
+        } else {
+            callback(true, json::object());
+        }
+    });
+}
+
+void McpClientSession::listPrompts(std::function<void(const json& result, const json& error)> callback) {
+    listPrompts("", [callback](const json& result, const std::string&, const json& error) {
         callback(result, error);
+    });
+}
+
+void McpClientSession::listPrompts(const std::string& cursor, std::function<void(const json& result, const std::string& nextCursor, const json& error)> callback) {
+    if (m_state != SessionState::Initialized) {
+        json err = {
+            {"code", -32002},
+            {"message", "Session not initialized"}
+        };
+        callback(json::object(), "", err);
+        return;
+    }
+    json params = json::object();
+    if (!cursor.empty()) {
+        params["cursor"] = cursor;
+    }
+    sendRequest("prompts/list", params, [callback](const json& result, const json& error) {
+        if (!error.empty()) {
+            callback(json::object(), "", error);
+        } else {
+            std::string nextCursor;
+            if (result.contains("nextCursor") && result["nextCursor"].is_string()) {
+                nextCursor = result["nextCursor"].get<std::string>();
+            }
+            callback(result, nextCursor, json::object());
+        }
     });
 }
 

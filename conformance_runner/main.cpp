@@ -377,6 +377,348 @@ void runLocalToolsTests() {
     std::cout << "========================================\n";
 }
 
+void runLocalResourcesAndPromptsTests() {
+    std::cout << "\n==================================================\n";
+    std::cout << "  C++ MCP SDK Resources & Prompts Local Test Suite\n";
+    std::cout << "==================================================\n\n";
+
+    // ----------------------------------------------------
+    // Scenario 1: Paginated listResources Discovery
+    // ----------------------------------------------------
+    {
+        auto transport = std::make_shared<MockTransport>();
+        auto session = std::make_shared<mcp::McpClientSession>(transport);
+        session->init();
+        session->start();
+        
+        session->initialize("test", "1", [](bool, const mcp::json&){});
+        mcp::json initResp = {
+            {"jsonrpc", "2.0"}, {"id", 1},
+            {"result", {{"protocolVersion", mcp::McpClientSession::MCP_PROTOCOL_VERSION}, {"capabilities", mcp::json::object()}, {"serverInfo", mcp::json::object()}}}
+        };
+        transport->pushServerMessage(initResp.dump());
+
+        // First page listResources (no cursor)
+        bool page1Success = false;
+        std::string page1NextCursor;
+        session->listResources("", [&](const mcp::json& result, const std::string& nextCursor, const mcp::json& error) {
+            if (error.empty() && result.contains("resources") && result["resources"].is_array() && result["resources"].size() == 2 && nextCursor == "res_page_2") {
+                page1Success = true;
+                page1NextCursor = nextCursor;
+            }
+        });
+
+        mcp::json page1Resp = {
+            {"jsonrpc", "2.0"},
+            {"id", 2},
+            {"result", {
+                {"resources", mcp::json::array({
+                    {{"uri", "file:///logs/system.log"}, {"name", "sysLog"}, {"mimeType", "text/plain"}},
+                    {{"uri", "file:///configs/app.json"}, {"name", "appJson"}, {"mimeType", "application/json"}}
+                })},
+                {"nextCursor", "res_page_2"}
+            }}
+        };
+        transport->pushServerMessage(page1Resp.dump());
+        assert(page1Success && "Resources Scenario 1 Failed: first page resources listing failed.");
+
+        // Second page listResources (with cursor)
+        bool page2Success = false;
+        session->listResources(page1NextCursor, [&](const mcp::json& result, const std::string& nextCursor, const mcp::json& error) {
+            if (error.empty() && result.contains("resources") && result["resources"].size() == 1 && nextCursor.empty()) {
+                page2Success = true;
+            }
+        });
+
+        mcp::json page2Resp = {
+            {"jsonrpc", "2.0"},
+            {"id", 3},
+            {"result", {
+                {"resources", mcp::json::array({
+                    {{"uri", "file:///assets/logo.png"}, {"name", "logo"}, {"mimeType", "image/png"}}
+                })}
+            }}
+        };
+        transport->pushServerMessage(page2Resp.dump());
+        assert(page2Success && "Resources Scenario 1 Failed: second page resources listing failed.");
+        std::cout << "[✓] Scenario 1: Paginated resource listing and cursor parsing\n";
+    }
+
+    // ----------------------------------------------------
+    // Scenario 2: resources/read Permission Denied, Large File, and Binary data with MIME type
+    // ----------------------------------------------------
+    {
+        auto transport = std::make_shared<MockTransport>();
+        auto session = std::make_shared<mcp::McpClientSession>(transport);
+        session->init();
+        session->start();
+        
+        session->initialize("test", "1", [](bool, const mcp::json&){});
+        mcp::json initResp = {
+            {"jsonrpc", "2.0"}, {"id", 1},
+            {"result", {{"protocolVersion", mcp::McpClientSession::MCP_PROTOCOL_VERSION}, {"capabilities", mcp::json::object()}, {"serverInfo", mcp::json::object()}}}
+        };
+        transport->pushServerMessage(initResp.dump());
+
+        // 2.1: Permission Denied error code -32000
+        bool permissionDeniedSuccess = false;
+        session->readResource("file:///configs/admin.json", [&](const mcp::json&, const mcp::json& error) {
+            if (!error.empty() && error.contains("code") && error["code"] == -32000) {
+                permissionDeniedSuccess = true;
+            }
+        });
+        mcp::json errPermissionResp = {
+            {"jsonrpc", "2.0"},
+            {"id", 2},
+            {"error", {{"code", -32000}, {"message", "Permission Denied"}}}
+        };
+        transport->pushServerMessage(errPermissionResp.dump());
+        assert(permissionDeniedSuccess && "Resources Scenario 2.1 Failed: admin config should return permission denied.");
+
+        // 2.2: Large file mock check (2MB)
+        bool hugeFileSuccess = false;
+        session->readResource("file:///logs/huge.log", [&](const mcp::json& result, const mcp::json& error) {
+            if (error.empty() && result.contains("contents") && result["contents"].is_array()) {
+                std::string text = result["contents"][0]["text"].get<std::string>();
+                if (text.length() == 2 * 1024 * 1024) {
+                    hugeFileSuccess = true;
+                }
+            }
+        });
+        mcp::json hugeFileResp = {
+            {"jsonrpc", "2.0"},
+            {"id", 3},
+            {"result", {
+                {"contents", mcp::json::array({{
+                    {"uri", "file:///logs/huge.log"},
+                    {"mimeType", "text/plain"},
+                    {"text", std::string(2 * 1024 * 1024, 'H')}
+                }})}
+            }}
+        };
+        transport->pushServerMessage(hugeFileResp.dump());
+        assert(hugeFileSuccess && "Resources Scenario 2.2 Failed: large resource content parsing failed.");
+
+        // 2.3: Binary base64 data and MIME check
+        bool binaryFileSuccess = false;
+        session->readResource("file:///assets/logo.png", [&](const mcp::json& result, const mcp::json& error) {
+            if (error.empty() && result.contains("contents")) {
+                auto contentItem = result["contents"][0];
+                if (contentItem.contains("blob") && contentItem["mimeType"] == "image/png") {
+                    binaryFileSuccess = true;
+                }
+            }
+        });
+        mcp::json binaryResp = {
+            {"jsonrpc", "2.0"},
+            {"id", 4},
+            {"result", {
+                {"contents", mcp::json::array({{
+                    {"uri", "file:///assets/logo.png"},
+                    {"mimeType", "image/png"},
+                    {"blob", "iVBORw0KGgoAAAANSUhEUgAAAAUA"}
+                }})}
+            }}
+        };
+        transport->pushServerMessage(binaryResp.dump());
+        assert(binaryFileSuccess && "Resources Scenario 2.3 Failed: binary data or MIME mapping failed.");
+        std::cout << "[✓] Scenario 2: Resource reading boundaries (403 Permission Denied, 2MB Large file, Binary base64 blob with MIME)\n";
+    }
+
+    // ----------------------------------------------------
+    // Scenario 3: Resource Subscriptions and updated Notification
+    // ----------------------------------------------------
+    {
+        auto transport = std::make_shared<MockTransport>();
+        auto session = std::make_shared<mcp::McpClientSession>(transport);
+        session->init();
+        session->start();
+        
+        session->initialize("test", "1", [](bool, const mcp::json&){});
+        mcp::json initResp = {
+            {"jsonrpc", "2.0"}, {"id", 1},
+            {"result", {{"protocolVersion", mcp::McpClientSession::MCP_PROTOCOL_VERSION}, {"capabilities", mcp::json::object()}, {"serverInfo", mcp::json::object()}}}
+        };
+        transport->pushServerMessage(initResp.dump());
+
+        // 3.1: Subscribe to resource
+        bool subscribeSuccess = false;
+        session->subscribeResource("file:///logs/system.log", [&](bool success, const mcp::json& error) {
+            if (success && error.empty()) {
+                subscribeSuccess = true;
+            }
+        });
+        mcp::json subResp = {{"jsonrpc", "2.0"}, {"id", 2}, {"result", mcp::json::object()}};
+        transport->pushServerMessage(subResp.dump());
+        assert(subscribeSuccess && "Resources Scenario 3.1 Failed: resource subscription failed.");
+
+        // 3.2: Listen to notifications/resources/updated notification
+        bool notificationReceived = false;
+        session->registerNotificationHandler("notifications/resources/updated", [&](const mcp::json& params) {
+            if (params.contains("uri") && params["uri"] == "file:///logs/system.log") {
+                notificationReceived = true;
+            }
+        });
+
+        // Server pushes resources update notification
+        mcp::json notifyMsg = {
+            {"jsonrpc", "2.0"},
+            {"method", "notifications/resources/updated"},
+            {"params", {{"uri", "file:///logs/system.log"}}}
+        };
+        transport->pushServerMessage(notifyMsg.dump());
+        assert(notificationReceived && "Resources Scenario 3.2 Failed: subscription notification not received.");
+
+        // 3.3: Unsubscribe from resource
+        bool unsubscribeSuccess = false;
+        session->unsubscribeResource("file:///logs/system.log", [&](bool success, const mcp::json& error) {
+            if (success && error.empty()) {
+                unsubscribeSuccess = true;
+            }
+        });
+        mcp::json unsubResp = {{"jsonrpc", "2.0"}, {"id", 3}, {"result", mcp::json::object()}};
+        transport->pushServerMessage(unsubResp.dump());
+        assert(unsubscribeSuccess && "Resources Scenario 3.3 Failed: resource unsubscription failed.");
+        std::cout << "[✓] Scenario 3: Resource subscription, unsubscription, and updated notifications\n";
+    }
+
+    // ----------------------------------------------------
+    // Scenario 4: Prompts listing, get, missing argument, and type validation
+    // ----------------------------------------------------
+    {
+        auto transport = std::make_shared<MockTransport>();
+        auto session = std::make_shared<mcp::McpClientSession>(transport);
+        session->init();
+        session->start();
+        
+        session->initialize("test", "1", [](bool, const mcp::json&){});
+        mcp::json initResp = {
+            {"jsonrpc", "2.0"}, {"id", 1},
+            {"result", {{"protocolVersion", mcp::McpClientSession::MCP_PROTOCOL_VERSION}, {"capabilities", mcp::json::object()}, {"serverInfo", mcp::json::object()}}}
+        };
+        transport->pushServerMessage(initResp.dump());
+
+        // 4.1: Paginated prompt listing
+        bool promptListSuccess = false;
+        std::string promptNextCursor;
+        session->listPrompts("", [&](const mcp::json& result, const std::string& nextCursor, const mcp::json& error) {
+            if (error.empty() && result.contains("prompts") && result["prompts"].size() == 1 && nextCursor == "prompt_page_2") {
+                promptListSuccess = true;
+                promptNextCursor = nextCursor;
+            }
+        });
+        mcp::json pList1Resp = {
+            {"jsonrpc", "2.0"},
+            {"id", 2},
+            {"result", {
+                {"prompts", mcp::json::array({{{"name", "code_review"}, {"description", "review"}}})},
+                {"nextCursor", "prompt_page_2"}
+            }}
+        };
+        transport->pushServerMessage(pList1Resp.dump());
+        assert(promptListSuccess && "Prompts Scenario 4.1 Failed: prompt list first page failed.");
+
+        // 4.2: prompts/get Missing argument error
+        bool argMissingSuccess = false;
+        session->getPrompt("code_review", mcp::json::object(), [&](const mcp::json&, const mcp::json& error) {
+            if (!error.empty() && error.contains("code") && error["code"] == -32602) {
+                argMissingSuccess = true;
+            }
+        });
+        mcp::json errMissingResp = {
+            {"jsonrpc", "2.0"},
+            {"id", 3},
+            {"error", {{"code", -32602}, {"message", "Missing required argument: code"}}}
+        };
+        transport->pushServerMessage(errMissingResp.dump());
+        assert(argMissingSuccess && "Prompts Scenario 4.2 Failed: missing argument should return -32602.");
+
+        // 4.3: prompts/get Argument type mismatch error
+        bool typeMismatchSuccess = false;
+        session->getPrompt("code_review", {{"code", 12345}}, [&](const mcp::json&, const mcp::json& error) {
+            if (!error.empty() && error.contains("code") && error["code"] == -32602) {
+                typeMismatchSuccess = true;
+            }
+        });
+        mcp::json errTypeResp = {
+            {"jsonrpc", "2.0"},
+            {"id", 4},
+            {"error", {{"code", -32602}, {"message", "Argument must be string"}}}
+        };
+        transport->pushServerMessage(errTypeResp.dump());
+        assert(typeMismatchSuccess && "Prompts Scenario 4.3 Failed: type mismatch should return -32602.");
+        std::cout << "[✓] Scenario 4: Prompt list discovery, missing parameters, and argument type checks\n";
+    }
+
+    // ----------------------------------------------------
+    // Scenario 5: Rich prompt contents (text, image, embedded resource) and listChanged Notification
+    // ----------------------------------------------------
+    {
+        auto transport = std::make_shared<MockTransport>();
+        auto session = std::make_shared<mcp::McpClientSession>(transport);
+        session->init();
+        session->start();
+        
+        session->initialize("test", "1", [](bool, const mcp::json&){});
+        mcp::json initResp = {
+            {"jsonrpc", "2.0"}, {"id", 1},
+            {"result", {{"protocolVersion", mcp::McpClientSession::MCP_PROTOCOL_VERSION}, {"capabilities", mcp::json::object()}, {"serverInfo", mcp::json::object()}}}
+        };
+        transport->pushServerMessage(initResp.dump());
+
+        // 5.1: Multi-media prompt result (text, image, resource contents)
+        bool richPromptSuccess = false;
+        session->getPrompt("rich_prompt", mcp::json::object(), [&](const mcp::json& result, const mcp::json& error) {
+            if (error.empty() && result.contains("messages")) {
+                auto contentArr = result["messages"][0]["content"];
+                if (contentArr.size() == 3) {
+                    if (contentArr[0]["type"] == "text" &&
+                        contentArr[1]["type"] == "image" &&
+                        contentArr[2]["type"] == "resource") {
+                        richPromptSuccess = true;
+                    }
+                }
+            }
+        });
+        mcp::json richPromptResp = {
+            {"jsonrpc", "2.0"},
+            {"id", 2},
+            {"result", {
+                {"description", "rich"},
+                {"messages", mcp::json::array({{
+                    {"role", "assistant"},
+                    {"content", mcp::json::array({
+                        {{"type", "text"}, {"text", "analysis"}},
+                        {{"type", "image"}, {"data", "Base64..."}, {"mimeType", "image/jpeg"}},
+                        {{"type", "resource"}, {"resource", {{"uri", "file:///logs/system.log"}, {"text", "[Embedded Logs]"}}}}
+                    })}
+                }})}
+            }}
+        };
+        transport->pushServerMessage(richPromptResp.dump());
+        assert(richPromptSuccess && "Prompts Scenario 5.1 Failed: rich media prompt content parsing failed.");
+
+        // 5.2: prompts/listChanged Notification
+        bool promptsChangedReceived = false;
+        session->registerNotificationHandler("notifications/prompts/list-changed", [&](const mcp::json&) {
+            promptsChangedReceived = true;
+        });
+
+        mcp::json notifyMsg = {
+            {"jsonrpc", "2.0"},
+            {"method", "notifications/prompts/list-changed"},
+            {"params", mcp::json::object()}
+        };
+        transport->pushServerMessage(notifyMsg.dump());
+        assert(promptsChangedReceived && "Prompts Scenario 5.2 Failed: prompts list-changed notification failed.");
+        std::cout << "[✓] Scenario 5: Prompt content formats (text, image, embedded resources) and list-changed notifications\n";
+    }
+
+    std::cout << "\n==================================================\n";
+    std::cout << "  🎉 🎉 🎉 All Resources & Prompts self-tests PASSED!\n";
+    std::cout << "==================================================\n";
+}
+
 int main(int argc, char* argv[]) {
     bool isConformance = false;
     for (int i = 1; i < argc; ++i) {
@@ -420,9 +762,10 @@ int main(int argc, char* argv[]) {
         cv.wait_for(lock, std::chrono::seconds(8), [&]{ return finished; });
         session->close();
     } else {
-        // Local lifecycle & tools scenario testing suite
+        // Local lifecycle, tools, resources & prompts testing suite
         runLocalLifecycleTests();
         runLocalToolsTests();
+        runLocalResourcesAndPromptsTests();
     }
     return 0;
 }
