@@ -13,7 +13,7 @@ AgentController::~AgentController() {
 }
 
 void AgentController::connectToStdioServer(const QString& program, const QStringList& arguments) {
-    emit statusChanged("Connecting (Stdio)...");
+    emit statusChanged("正在连接 (Stdio)...");
     emit logMessage("Starting process: " + program + " " + arguments.join(" "));
 
     if (m_client) {
@@ -36,7 +36,7 @@ void AgentController::connectToStdioServer(const QString& program, const QString
 }
 
 void AgentController::connectToHttpServer(const QString& sseUrl) {
-    emit statusChanged("Connecting (HTTP/SSE)...");
+    emit statusChanged("正在连接 (HTTP/SSE)...");
     emit logMessage("Connecting to SSE Endpoint: " + sseUrl);
 
     if (m_client) {
@@ -59,19 +59,19 @@ void AgentController::connectToHttpServer(const QString& sseUrl) {
 }
 
 void AgentController::onConnectionOpened() {
-    emit statusChanged("Connected (Handshaking)");
+    emit statusChanged("已建连 (正在握手)");
     emit logMessage("Transport channel connected. Initializing MCP...");
     m_client->initializeClient("mcp-cpp-agent-client", "1.0.0");
 }
 
 void AgentController::onInitialized(bool success, const QString& info) {
     if (success) {
-        emit statusChanged("Initialized");
+        emit statusChanged("已初始化");
         emit logMessage("MCP Handshake succeeded. Server info: " + info);
         emit logMessage("Listing tools...");
         m_client->listTools();
     } else {
-        emit statusChanged("Handshake Failed");
+        emit statusChanged("握手失败");
         emit logMessage("MCP Handshake failed: " + info);
     }
 }
@@ -103,6 +103,6 @@ void AgentController::onErrorOccurred(const QString& errorMessage) {
 }
 
 void AgentController::onDisconnected() {
-    emit statusChanged("Disconnected");
+    emit statusChanged("已断开连接");
     emit logMessage("Connection closed.");
 }

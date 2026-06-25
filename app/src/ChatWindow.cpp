@@ -27,7 +27,7 @@ ChatWindow::ChatWindow(AgentController* controller, ToolManager* toolManager, QW
 }
 
 void ChatWindow::setupUi() {
-    setWindowTitle("C++ MCP Client Debugger (C++17 & Qt6)");
+    setWindowTitle("C++ MCP 客户端调试器 (C++17 & Qt6)");
     resize(1000, 700);
 
     // Premium Slate Dark QSS Stylesheet
@@ -49,7 +49,7 @@ void ChatWindow::setupUi() {
     QVBoxLayout* mainLayout = new QVBoxLayout(centralWidget);
 
     QHBoxLayout* topLayout = new QHBoxLayout();
-    m_lblStatus = new QLabel("Status: Disconnected", this);
+    m_lblStatus = new QLabel("状态: 未连接", this);
     m_lblStatus->setStyleSheet("font-size: 14px; font-weight: bold; color: #ff7675;");
     topLayout->addWidget(m_lblStatus);
     topLayout->addStretch();
@@ -63,31 +63,31 @@ void ChatWindow::setupUi() {
     leftLayout->setContentsMargins(0, 0, 0, 0);
 
     // 1. Connection Group
-    QGroupBox* connGroup = new QGroupBox("1. Server Connection", this);
+    QGroupBox* connGroup = new QGroupBox("1. 服务端连接配置", this);
     QGridLayout* connLayout = new QGridLayout(connGroup);
 
-    m_radioStdio = new QRadioButton("Stdio (Subprocess redirection)", this);
+    m_radioStdio = new QRadioButton("Stdio (子进程管道重定向)", this);
     m_radioStdio->setChecked(true);
     connLayout->addWidget(m_radioStdio, 0, 0, 1, 2);
 
-    connLayout->addWidget(new QLabel("Program/Command:", this), 1, 0);
+    connLayout->addWidget(new QLabel("启动程序/命令:", this), 1, 0);
     m_editStdioProgram = new QLineEdit(this);
     connLayout->addWidget(m_editStdioProgram, 1, 1);
 
-    connLayout->addWidget(new QLabel("Arguments:", this), 2, 0);
+    connLayout->addWidget(new QLabel("运行参数:", this), 2, 0);
     m_editStdioArgs = new QLineEdit(this);
     connLayout->addWidget(m_editStdioArgs, 2, 1);
 
-    m_radioHttp = new QRadioButton("HTTP / SSE (Server Sent Events)", this);
+    m_radioHttp = new QRadioButton("HTTP / SSE (服务端推送事件)", this);
     connLayout->addWidget(m_radioHttp, 3, 0, 1, 2);
 
-    connLayout->addWidget(new QLabel("SSE URL:", this), 4, 0);
+    connLayout->addWidget(new QLabel("SSE 终结点地址:", this), 4, 0);
     m_editHttpUrl = new QLineEdit(this);
     connLayout->addWidget(m_editHttpUrl, 4, 1);
 
     QHBoxLayout* btnConnLayout = new QHBoxLayout();
-    m_btnConnect = new QPushButton("Connect", this);
-    m_btnDisconnect = new QPushButton("Disconnect", this);
+    m_btnConnect = new QPushButton("连接", this);
+    m_btnDisconnect = new QPushButton("断开连接", this);
     m_btnDisconnect->setEnabled(false);
     btnConnLayout->addWidget(m_btnConnect);
     btnConnLayout->addWidget(m_btnDisconnect);
@@ -96,24 +96,24 @@ void ChatWindow::setupUi() {
     leftLayout->addWidget(connGroup);
 
     // 2. Tool Invoker Group
-    QGroupBox* toolGroup = new QGroupBox("2. Tool Invoker", this);
+    QGroupBox* toolGroup = new QGroupBox("2. 工具执行器", this);
     QVBoxLayout* toolLayout = new QVBoxLayout(toolGroup);
 
-    toolLayout->addWidget(new QLabel("Select Tool:", this));
+    toolLayout->addWidget(new QLabel("选择工具:", this));
     m_comboTools = new QComboBox(this);
     toolLayout->addWidget(m_comboTools);
 
-    m_lblToolDesc = new QLabel("Description: -", this);
+    m_lblToolDesc = new QLabel("描述: -", this);
     m_lblToolDesc->setWordWrap(true);
     m_lblToolDesc->setStyleSheet("color: #a0a0a0; font-style: italic;");
     toolLayout->addWidget(m_lblToolDesc);
 
-    toolLayout->addWidget(new QLabel("Arguments (JSON format):", this));
+    toolLayout->addWidget(new QLabel("调用参数 (JSON 格式):", this));
     m_editToolArgs = new QTextEdit(this);
-    m_editToolArgs->setPlaceholderText("{\n  \"arg1\": \"val\"\n}");
+    m_editToolArgs->setPlaceholderText("{\n  \"参数1\": \"值\"\n}");
     toolLayout->addWidget(m_editToolArgs);
 
-    m_btnCallTool = new QPushButton("Call Tool", this);
+    m_btnCallTool = new QPushButton("执行工具", this);
     m_btnCallTool->setEnabled(false);
     toolLayout->addWidget(m_btnCallTool);
 
@@ -121,7 +121,7 @@ void ChatWindow::setupUi() {
     splitter->addWidget(leftWidget);
 
     // 3. Right Log Panel
-    QGroupBox* logGroup = new QGroupBox("3. Log Console (JSON-RPC Traffic)", this);
+    QGroupBox* logGroup = new QGroupBox("3. 日志控制台 (JSON-RPC 协议流量)", this);
     QVBoxLayout* logLayout = new QVBoxLayout(logGroup);
 
     m_txtLog = new QPlainTextEdit(this);
@@ -143,14 +143,14 @@ void ChatWindow::handleConnect() {
         QString argsRaw = m_editStdioArgs->text().trimmed();
         QStringList args = argsRaw.isEmpty() ? QStringList() : argsRaw.split(' ', Qt::SkipEmptyParts);
         if (prog.isEmpty()) {
-            QMessageBox::warning(this, "Input Error", "Please specify a program/command to launch.");
+            QMessageBox::warning(this, "输入错误", "请指定要启动的程序或命令。");
             return;
         }
         m_controller->connectToStdioServer(prog, args);
     } else {
         QString sse = m_editHttpUrl->text().trimmed();
         if (sse.isEmpty()) {
-            QMessageBox::warning(this, "Input Error", "Please specify an SSE endpoint URL.");
+            QMessageBox::warning(this, "输入错误", "请指定 SSE 终结点 URL 地址。");
             return;
         }
         m_controller->connectToHttpServer(sse);
@@ -183,19 +183,19 @@ void ChatWindow::updateToolList() {
     m_comboTools->addItems(names);
 
     bool hasTools = !names.isEmpty();
-    m_btnCallTool->setEnabled(hasTools && m_lblStatus->text().contains("Initialized"));
+    m_btnCallTool->setEnabled(hasTools && m_lblStatus->text().contains("已初始化"));
 }
 
 void ChatWindow::updateToolDescription() {
     QString name = m_comboTools->currentText();
     if (name.isEmpty()) {
-        m_lblToolDesc->setText("Description: -");
+        m_lblToolDesc->setText("描述: -");
         m_editToolArgs->setPlainText("");
         return;
     }
 
     QString desc = m_toolManager->toolDescription(name);
-    m_lblToolDesc->setText("Description: " + desc);
+    m_lblToolDesc->setText("描述: " + desc);
 
     mcp::McpTool tool = m_toolManager->getTool(name);
     nlohmann::json schema = tool.inputSchema;
@@ -229,11 +229,11 @@ void ChatWindow::appendLog(const QString& msg) {
 }
 
 void ChatWindow::updateStatus(const QString& status) {
-    m_lblStatus->setText("Status: " + status);
-    if (status == "Initialized") {
+    m_lblStatus->setText("状态: " + status);
+    if (status == "已初始化") {
         m_lblStatus->setStyleSheet("font-size: 14px; font-weight: bold; color: #1dd1a1;");
         m_btnCallTool->setEnabled(m_comboTools->count() > 0);
-    } else if (status.startsWith("Connecting")) {
+    } else if (status.startsWith("正在连接")) {
         m_lblStatus->setStyleSheet("font-size: 14px; font-weight: bold; color: #feca57;");
     } else {
         m_lblStatus->setStyleSheet("font-size: 14px; font-weight: bold; color: #ff7675;");
