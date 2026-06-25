@@ -18,6 +18,8 @@ namespace mcp {
  */
 class McpClientSession : public std::enable_shared_from_this<McpClientSession> {
 public:
+    static constexpr auto MCP_PROTOCOL_VERSION = "2025-11-25";
+
     using ResponseCallback = std::function<void(const json& result, const json& error)>;
     using NotificationCallback = std::function<void(const json& params)>;
 
@@ -62,6 +64,11 @@ public:
                     std::function<void(bool success, const json& serverInfo)> callback);
 
     /**
+     * @brief Safely shutdown the session.
+     */
+    void shutdown(std::function<void(bool success)> callback);
+
+    /**
      * @brief List the tools exposed by the MCP server.
      */
     void listTools(std::function<void(const std::vector<McpTool>& tools, const json& error)> callback);
@@ -71,6 +78,26 @@ public:
      */
     void callTool(const std::string& name, const json& arguments,
                   std::function<void(const json& content, const json& error)> callback);
+
+    /**
+     * @brief List the resources exposed by the MCP server.
+     */
+    void listResources(std::function<void(const json& result, const json& error)> callback);
+
+    /**
+     * @brief Read a resource content.
+     */
+    void readResource(const std::string& uri, std::function<void(const json& result, const json& error)> callback);
+
+    /**
+     * @brief List the prompts exposed by the MCP server.
+     */
+    void listPrompts(std::function<void(const json& result, const json& error)> callback);
+
+    /**
+     * @brief Get a prompt template.
+     */
+    void getPrompt(const std::string& name, const json& arguments, std::function<void(const json& result, const json& error)> callback);
 
 private:
     void handleIncomingMessage(const std::string& rawMessage);

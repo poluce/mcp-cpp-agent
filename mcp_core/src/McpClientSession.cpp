@@ -141,7 +141,7 @@ void McpClientSession::handleRequestFromServer(const json& requestJson) {
 void McpClientSession::initialize(const std::string& clientName, const std::string& clientVersion,
                                   std::function<void(bool success, const json& serverInfo)> callback) {
     json params = {
-        {"protocolVersion", "2024-11-05"},
+        {"protocolVersion", MCP_PROTOCOL_VERSION},
         {"capabilities", {
             {"roots", {{"listChanged", false}}},
             {"sampling", json::object()}
@@ -159,6 +159,16 @@ void McpClientSession::initialize(const std::string& clientName, const std::stri
         } else {
             self->sendNotification("notifications/initialized", json::object());
             callback(true, result);
+        }
+    });
+}
+
+void McpClientSession::shutdown(std::function<void(bool success)> callback) {
+    sendRequest("shutdown", json::object(), [callback](const json& result, const json& error) {
+        if (!error.empty()) {
+            callback(false);
+        } else {
+            callback(true);
         }
     });
 }
@@ -192,6 +202,37 @@ void McpClientSession::callTool(const std::string& name, const json& arguments,
         } else {
             callback(result, json::object());
         }
+    });
+}
+
+void McpClientSession::listResources(std::function<void(const json& result, const json& error)> callback) {
+    sendRequest("resources/list", json::object(), [callback](const json& result, const json& error) {
+        callback(result, error);
+    });
+}
+
+void McpClientSession::readResource(const std::string& uri, std::function<void(const json& result, const json& error)> callback) {
+    json params = {
+        {"uri", uri}
+    };
+    sendRequest("resources/read", params, [callback](const json& result, const json& error) {
+        callback(result, error);
+    });
+}
+
+void McpClientSession::listPrompts(std::function<void(const json& result, const json& error)> callback) {
+    sendRequest("prompts/list", json::object(), [callback](const json& result, const json& error) {
+        callback(result, error);
+    });
+}
+
+void McpClientSession::getPrompt(const std::string& name, const json& arguments, std::function<void(const json& result, const json& error)> callback) {
+    json params = {
+        {"name", name},
+        {"arguments", arguments}
+    };
+    sendRequest("prompts/get", params, [callback](const json& result, const json& error) {
+        callback(result, error);
     });
 }
 

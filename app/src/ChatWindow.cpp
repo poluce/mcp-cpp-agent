@@ -89,8 +89,11 @@ void ChatWindow::setupUi() {
     m_btnConnect = new QPushButton("连接", this);
     m_btnDisconnect = new QPushButton("断开连接", this);
     m_btnDisconnect->setEnabled(false);
+    m_btnShutdown = new QPushButton("安全停机", this);
+    m_btnShutdown->setEnabled(false);
     btnConnLayout->addWidget(m_btnConnect);
     btnConnLayout->addWidget(m_btnDisconnect);
+    btnConnLayout->addWidget(m_btnShutdown);
     connLayout->addLayout(btnConnLayout, 5, 0, 1, 2);
 
     leftLayout->addWidget(connGroup);
@@ -118,10 +121,22 @@ void ChatWindow::setupUi() {
     toolLayout->addWidget(m_btnCallTool);
 
     leftLayout->addWidget(toolGroup);
+
+    // 3. Resources & Prompts Group
+    QGroupBox* extraGroup = new QGroupBox("3. 资源与提示词测试", this);
+    QHBoxLayout* extraLayout = new QHBoxLayout(extraGroup);
+    m_btnListResources = new QPushButton("获取资源列表", this);
+    m_btnListResources->setEnabled(false);
+    m_btnListPrompts = new QPushButton("获取提示词列表", this);
+    m_btnListPrompts->setEnabled(false);
+    extraLayout->addWidget(m_btnListResources);
+    extraLayout->addWidget(m_btnListPrompts);
+    leftLayout->addWidget(extraGroup);
+
     splitter->addWidget(leftWidget);
 
-    // 3. Right Log Panel
-    QGroupBox* logGroup = new QGroupBox("3. 日志控制台 (JSON-RPC 协议流量)", this);
+    // 4. Right Log Panel
+    QGroupBox* logGroup = new QGroupBox("4. 日志控制台 (JSON-RPC 协议流量)", this);
     QVBoxLayout* logLayout = new QVBoxLayout(logGroup);
 
     m_txtLog = new QPlainTextEdit(this);
@@ -133,7 +148,10 @@ void ChatWindow::setupUi() {
     // Connect local triggers
     connect(m_btnConnect, &QPushButton::clicked, this, &ChatWindow::handleConnect);
     connect(m_btnDisconnect, &QPushButton::clicked, this, &ChatWindow::handleDisconnect);
+    connect(m_btnShutdown, &QPushButton::clicked, this, &ChatWindow::handleShutdown);
     connect(m_btnCallTool, &QPushButton::clicked, this, &ChatWindow::handleCallTool);
+    connect(m_btnListResources, &QPushButton::clicked, this, &ChatWindow::handleListResources);
+    connect(m_btnListPrompts, &QPushButton::clicked, this, &ChatWindow::handleListPrompts);
     connect(m_comboTools, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &ChatWindow::updateToolDescription);
 }
 
@@ -166,7 +184,16 @@ void ChatWindow::handleDisconnect() {
     }
     m_btnConnect->setEnabled(true);
     m_btnDisconnect->setEnabled(false);
+    m_btnShutdown->setEnabled(false);
     m_btnCallTool->setEnabled(false);
+    m_btnListResources->setEnabled(false);
+    m_btnListPrompts->setEnabled(false);
+}
+
+void ChatWindow::handleShutdown() {
+    if (m_controller->mcpClient()) {
+        m_controller->mcpClient()->shutdownClient();
+    }
 }
 
 void ChatWindow::handleCallTool() {
@@ -175,6 +202,18 @@ void ChatWindow::handleCallTool() {
 
     QString argsJson = m_editToolArgs->toPlainText().trimmed();
     m_controller->mcpClient()->callTool(toolName, argsJson);
+}
+
+void ChatWindow::handleListResources() {
+    if (m_controller->mcpClient()) {
+        m_controller->mcpClient()->listResources();
+    }
+}
+
+void ChatWindow::handleListPrompts() {
+    if (m_controller->mcpClient()) {
+        m_controller->mcpClient()->listPrompts();
+    }
 }
 
 void ChatWindow::updateToolList() {
@@ -233,9 +272,17 @@ void ChatWindow::updateStatus(const QString& status) {
     if (status == "已初始化") {
         m_lblStatus->setStyleSheet("font-size: 14px; font-weight: bold; color: #1dd1a1;");
         m_btnCallTool->setEnabled(m_comboTools->count() > 0);
+        m_btnShutdown->setEnabled(true);
+        m_btnListResources->setEnabled(true);
+        m_btnListPrompts->setEnabled(true);
     } else if (status.startsWith("正在连接")) {
         m_lblStatus->setStyleSheet("font-size: 14px; font-weight: bold; color: #feca57;");
     } else {
         m_lblStatus->setStyleSheet("font-size: 14px; font-weight: bold; color: #ff7675;");
+        m_btnShutdown->setEnabled(false);
+        m_btnListResources->setEnabled(false);
+        m_btnListPrompts->setEnabled(false);
+        m_btnDisconnect->setEnabled(false);
+        m_btnConnect->setEnabled(true);
     }
 }

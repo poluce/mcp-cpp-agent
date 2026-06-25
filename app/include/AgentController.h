@@ -30,6 +30,11 @@ private slots:
     void onInitialized(bool success, const QString& info);
     void onToolsListed(const QList<mcp::McpTool>& tools, const QString& error);
     void onToolCalled(const QString& toolName, const QString& resultJson, const QString& error);
+    void onShutdownCompleted(bool success);
+    void onResourcesListed(const QString& resultJson, const QString& error);
+    void onResourceRead(const QString& uri, const QString& resultJson, const QString& error);
+    void onPromptsListed(const QString& resultJson, const QString& error);
+    void onPromptGot(const QString& promptName, const QString& resultJson, const QString& error);
     void onErrorOccurred(const QString& errorMessage);
     void onDisconnected();
 

@@ -29,6 +29,11 @@ void AgentController::connectToStdioServer(const QString& program, const QString
     connect(m_client, &mcp::QtMcpClient::initialized, this, &AgentController::onInitialized);
     connect(m_client, &mcp::QtMcpClient::toolsListed, this, &AgentController::onToolsListed);
     connect(m_client, &mcp::QtMcpClient::toolCalled, this, &AgentController::onToolCalled);
+    connect(m_client, &mcp::QtMcpClient::shutdownCompleted, this, &AgentController::onShutdownCompleted);
+    connect(m_client, &mcp::QtMcpClient::resourcesListed, this, &AgentController::onResourcesListed);
+    connect(m_client, &mcp::QtMcpClient::resourceRead, this, &AgentController::onResourceRead);
+    connect(m_client, &mcp::QtMcpClient::promptsListed, this, &AgentController::onPromptsListed);
+    connect(m_client, &mcp::QtMcpClient::promptGot, this, &AgentController::onPromptGot);
     connect(m_client, &mcp::QtMcpClient::errorOccurred, this, &AgentController::onErrorOccurred);
     connect(m_client, &mcp::QtMcpClient::disconnected, this, &AgentController::onDisconnected);
 
@@ -52,6 +57,11 @@ void AgentController::connectToHttpServer(const QString& sseUrl) {
     connect(m_client, &mcp::QtMcpClient::initialized, this, &AgentController::onInitialized);
     connect(m_client, &mcp::QtMcpClient::toolsListed, this, &AgentController::onToolsListed);
     connect(m_client, &mcp::QtMcpClient::toolCalled, this, &AgentController::onToolCalled);
+    connect(m_client, &mcp::QtMcpClient::shutdownCompleted, this, &AgentController::onShutdownCompleted);
+    connect(m_client, &mcp::QtMcpClient::resourcesListed, this, &AgentController::onResourcesListed);
+    connect(m_client, &mcp::QtMcpClient::resourceRead, this, &AgentController::onResourceRead);
+    connect(m_client, &mcp::QtMcpClient::promptsListed, this, &AgentController::onPromptsListed);
+    connect(m_client, &mcp::QtMcpClient::promptGot, this, &AgentController::onPromptGot);
     connect(m_client, &mcp::QtMcpClient::errorOccurred, this, &AgentController::onErrorOccurred);
     connect(m_client, &mcp::QtMcpClient::disconnected, this, &AgentController::onDisconnected);
 
@@ -105,4 +115,43 @@ void AgentController::onErrorOccurred(const QString& errorMessage) {
 void AgentController::onDisconnected() {
     emit statusChanged("已断开连接");
     emit logMessage("Connection closed.");
+}
+
+void AgentController::onShutdownCompleted(bool success) {
+    emit logMessage(QString("安全停机 (shutdown) 响应: %1").arg(success ? "成功" : "失败"));
+    if (m_client) {
+        m_client->close();
+    }
+}
+
+void AgentController::onResourcesListed(const QString& resultJson, const QString& error) {
+    if (!error.isEmpty()) {
+        emit logMessage("获取资源列表失败: " + error);
+    } else {
+        emit logMessage("资源列表 (resources/list) 响应内容: " + resultJson);
+    }
+}
+
+void AgentController::onResourceRead(const QString& uri, const QString& resultJson, const QString& error) {
+    if (!error.isEmpty()) {
+        emit logMessage(QString("读取资源 [%1] 失败: %2").arg(uri, error));
+    } else {
+        emit logMessage(QString("读取资源 [%1] 响应内容: %2").arg(uri, resultJson));
+    }
+}
+
+void AgentController::onPromptsListed(const QString& resultJson, const QString& error) {
+    if (!error.isEmpty()) {
+        emit logMessage("获取提示词列表失败: " + error);
+    } else {
+        emit logMessage("提示词列表 (prompts/list) 响应内容: " + resultJson);
+    }
+}
+
+void AgentController::onPromptGot(const QString& promptName, const QString& resultJson, const QString& error) {
+    if (!error.isEmpty()) {
+        emit logMessage(QString("获取提示词模板 [%1] 失败: %2").arg(promptName, error));
+    } else {
+        emit logMessage(QString("获取提示词模板 [%1] 响应内容: %2").arg(promptName, resultJson));
+    }
 }

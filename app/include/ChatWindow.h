@@ -22,7 +22,10 @@ public:
 private slots:
     void handleConnect();
     void handleDisconnect();
+    void handleShutdown();
     void handleCallTool();
+    void handleListResources();
+    void handleListPrompts();
     void updateToolList();
     void updateToolDescription();
     void appendLog(const QString& msg);
@@ -44,6 +47,7 @@ private:
 
     QPushButton* m_btnConnect;
     QPushButton* m_btnDisconnect;
+    QPushButton* m_btnShutdown;
 
     QLabel* m_lblStatus;
 
@@ -51,6 +55,8 @@ private:
     QLabel* m_lblToolDesc;
     QTextEdit* m_editToolArgs;
     QPushButton* m_btnCallTool;
+    QPushButton* m_btnListResources;
+    QPushButton* m_btnListPrompts;
 
     QPlainTextEdit* m_txtLog;
 };

@@ -24,8 +24,13 @@ public:
 signals:
     void connectionOpened();
     void initialized(bool success, const QString& info);
+    void shutdownCompleted(bool success);
     void toolsListed(const QList<mcp::McpTool>& tools, const QString& error);
     void toolCalled(const QString& toolName, const QString& resultJson, const QString& error);
+    void resourcesListed(const QString& resultJson, const QString& error);
+    void resourceRead(const QString& uri, const QString& resultJson, const QString& error);
+    void promptsListed(const QString& resultJson, const QString& error);
+    void promptGot(const QString& promptName, const QString& resultJson, const QString& error);
     void errorOccurred(const QString& errorMessage);
     void disconnected();
 
@@ -33,8 +38,13 @@ public slots:
     void start();
     void close();
     void initializeClient(const QString& clientName, const QString& clientVersion);
+    void shutdownClient();
     void listTools();
     void callTool(const QString& name, const QString& argumentsJson);
+    void listResources();
+    void readResource(const QString& uri);
+    void listPrompts();
+    void getPrompt(const QString& name, const QString& argumentsJson);
 
 private:
     std::shared_ptr<McpClientSession> m_session;

@@ -85,4 +85,52 @@ void QtMcpClient::callTool(const QString& name, const QString& argumentsJson) {
     });
 }
 
+void QtMcpClient::shutdownClient() {
+    m_session->shutdown([this](bool success) {
+        emit shutdownCompleted(success);
+    });
+}
+
+void QtMcpClient::listResources() {
+    m_session->listResources([this](const json& result, const json& error) {
+        QString resStr = QString::fromStdString(result.dump());
+        QString errStr = error.empty() ? "" : QString::fromStdString(error.dump());
+        emit resourcesListed(resStr, errStr);
+    });
+}
+
+void QtMcpClient::readResource(const QString& uri) {
+    m_session->readResource(uri.toStdString(), [this, uri](const json& result, const json& error) {
+        QString resStr = QString::fromStdString(result.dump());
+        QString errStr = error.empty() ? "" : QString::fromStdString(error.dump());
+        emit resourceRead(uri, resStr, errStr);
+    });
+}
+
+void QtMcpClient::listPrompts() {
+    m_session->listPrompts([this](const json& result, const json& error) {
+        QString resStr = QString::fromStdString(result.dump());
+        QString errStr = error.empty() ? "" : QString::fromStdString(error.dump());
+        emit promptsListed(resStr, errStr);
+    });
+}
+
+void QtMcpClient::getPrompt(const QString& name, const QString& argumentsJson) {
+    json args = json::object();
+    if (!argumentsJson.isEmpty()) {
+        try {
+            args = json::parse(argumentsJson.toStdString());
+        } catch (const std::exception& e) {
+            emit promptGot(name, "", "Arguments JSON parse error: " + QString::fromStdString(e.what()));
+            return;
+        }
+    }
+
+    m_session->getPrompt(name.toStdString(), args, [this, name](const json& result, const json& error) {
+        QString resStr = QString::fromStdString(result.dump());
+        QString errStr = error.empty() ? "" : QString::fromStdString(error.dump());
+        emit promptGot(name, resStr, errStr);
+    });
+}
+
 } // namespace mcp
