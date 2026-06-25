@@ -1,0 +1,19 @@
+# Build directories
+build/
+bin/
+lib/
+
+# IDE configurations
+.vscode/
+.idea/
+*.user
+*.suo
+*.userossc
+*.sln
+*.vcxproj
+*.filters
+
+# OS temporary files
+Thumbs.db
+Desktop.ini
+.DS_Store
