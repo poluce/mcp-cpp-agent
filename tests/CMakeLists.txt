@@ -12,6 +12,7 @@ add_executable(mcp_core_tests
     features/test_prompts.cpp
     features/test_notifications.cpp
     features/test_new_capabilities.cpp
+    features/test_sampling_roots_oauth.cpp
 )
 
 # Windows 控制台应用

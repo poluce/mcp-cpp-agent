@@ -4,6 +4,10 @@ project(mcp-cpp-agent LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+if(MSVC)
+    add_compile_options(/Zc:__cplusplus)
+endif()
+
 # Fetch nlohmann/json (single-header JSON library)
 include(FetchContent)
 FetchContent_Declare(
@@ -43,19 +47,7 @@ add_subdirectory(mcp_core)
 # 独立测试（纯 C++17，不需要 Qt）
 add_subdirectory(tests)
 
-# 可选：Qt 扩展层（需要 Qt6）
-option(MCP_ENABLE_QT "Build Qt transport extensions and debugger example" OFF)
+# 官方一致性测试客户端（纯 C++17，不需要 Qt）
+add_subdirectory(conformance_runner)
 
-if(MCP_ENABLE_QT)
-    set(CMAKE_AUTOMOC ON)
-    set(CMAKE_AUTOUIC ON)
-    set(CMAKE_AUTORCC ON)
 
-    find_package(Qt6 REQUIRED COMPONENTS Core Widgets Network)
-
-    add_subdirectory(extensions/qt)
-    add_subdirectory(examples/debugger)
-
-    # 协议一致性测试（依赖 Qt 的 http transport 测试）
-    add_subdirectory(conformance_runner)
-endif()

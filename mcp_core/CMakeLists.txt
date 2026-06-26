@@ -10,11 +10,13 @@ add_library(mcp_core STATIC
     include/mcp_core/McpTool.h
     include/mcp_core/McpClientSession.h
     include/mcp_core/JsonRpcDispatcher.h
+    include/mcp_core/McpOAuthClient.h
     src/ConsoleStdioTransport.cpp
     src/SubprocessStdioTransport.cpp
     src/HttpSseTransport.cpp
     src/JsonRpcDispatcher.cpp
     src/McpClientSession.cpp
+    src/McpOAuthClient.cpp
 )
 
 target_compile_options(mcp_core PRIVATE

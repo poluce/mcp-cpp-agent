@@ -10,3 +10,4 @@
 #include "JsonRpcDispatcher.h"
 #include "SubprocessStdioTransport.h"
 #include "HttpSseTransport.h"
+#include "McpOAuthClient.h"

@@ -54,8 +54,9 @@ void McpClientSession::close() {
     }
 }
 
-int64_t McpClientSession::sendRequest(const std::string& method, const json& params, ResponseCallback callback) {
+int64_t McpClientSession::sendRequest(const std::string& method, const json& params, ResponseCallback callback, ProgressCallback progressCallback) {
     int64_t id;
+    bool hasProgress = (progressCallback != nullptr);
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         id = m_nextId++;
@@ -63,6 +64,9 @@ int64_t McpClientSession::sendRequest(const std::string& method, const json& par
             std::move(callback),
             std::chrono::steady_clock::now()
         };
+        if (hasProgress) {
+            m_progressHandlers[id] = std::move(progressCallback);
+        }
     }
 
     json requestMsg = {
@@ -71,6 +75,13 @@ int64_t McpClientSession::sendRequest(const std::string& method, const json& par
         {"method", method},
         {"params", params}
     };
+
+    if (hasProgress) {
+        if (!requestMsg["params"].is_object()) {
+            requestMsg["params"] = json::object();
+        }
+        requestMsg["params"]["_meta"]["progressToken"] = id;
+    }
 
     log(LogLevel::Debug, "sendRequest: method=" + method + ", id=" + std::to_string(id));
     m_transport->send(requestMsg.dump());
@@ -146,6 +157,7 @@ void McpClientSession::handleResponse(const json& responseJson) {
             m_pendingRequests.erase(it);
             found = true;
         }
+        m_progressHandlers.erase(id);
     }
 
     if (found) {
@@ -164,6 +176,36 @@ void McpClientSession::handleResponse(const json& responseJson) {
 void McpClientSession::handleNotification(const json& notificationJson) {
     std::string method = notificationJson["method"].get<std::string>();
     json params = notificationJson.contains("params") ? notificationJson["params"] : json::object();
+
+    if (method == "notifications/progress") {
+        int64_t progressTokenId = 0;
+        if (params.contains("progressToken")) {
+            auto& token = params["progressToken"];
+            if (token.is_number_integer()) {
+                progressTokenId = token.get<int64_t>();
+            } else if (token.is_string()) {
+                try {
+                    progressTokenId = std::stoll(token.get<std::string>());
+                } catch (...) {
+                    // Ignore parsing error
+                }
+            }
+        }
+
+        if (progressTokenId != 0) {
+            ProgressCallback progressCb;
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                auto it = m_progressHandlers.find(progressTokenId);
+                if (it != m_progressHandlers.end()) {
+                    progressCb = it->second;
+                }
+            }
+            if (progressCb) {
+                progressCb(params);
+            }
+        }
+    }
 
     NotificationCallback cb;
     {
@@ -231,11 +273,7 @@ void McpClientSession::initialize(const std::string& clientName, const std::stri
 
     json params = {
         {"protocolVersion", MCP_PROTOCOL_VERSION},
-        {"capabilities", {
-            {"roots", {{"listChanged", false}}},
-            {"sampling", json::object()},
-            {"elicitation", {{"modes", {"form", "url"}}}}
-        }},
+        {"capabilities", m_capabilities},
         {"clientInfo", {
             {"name", clientName},
             {"version", clientVersion}
@@ -253,14 +291,54 @@ void McpClientSession::initialize(const std::string& clientName, const std::stri
                 serverVer = result["protocolVersion"].get<std::string>();
             }
 
-            if (serverVer != MCP_PROTOCOL_VERSION) {
-                self->m_state = SessionState::Uninitialized; 
+            // 检查服务端版本是否在客户端支持列表中
+            bool versionSupported = false;
+            for (const auto& ver : SUPPORTED_PROTOCOL_VERSIONS) {
+                if (serverVer == ver) {
+                    versionSupported = true;
+                    break;
+                }
+            }
+
+            if (!versionSupported) {
+                self->m_state = SessionState::Uninitialized;
                 json verErr = {
                     {"code", -32002},
                     {"message", "Version Mismatch: Server returned unsupported version " + serverVer}
                 };
                 callback(false, verErr);
                 return;
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(self->m_mutex);
+                if (result.contains("protocolVersion") && result["protocolVersion"].is_string()) {
+                    self->m_negotiatedProtocolVersion = result["protocolVersion"].get<std::string>();
+                } else {
+                    self->m_negotiatedProtocolVersion = MCP_PROTOCOL_VERSION;
+                }
+
+                if (result.contains("capabilities") && result["capabilities"].is_object()) {
+                    self->m_serverCapabilities = result["capabilities"];
+                } else {
+                    self->m_serverCapabilities = json::object();
+                }
+
+                if (result.contains("serverInfo") && result["serverInfo"].is_object()) {
+                    self->m_serverVersion = result["serverInfo"];
+                } else {
+                    self->m_serverVersion = json::object();
+                }
+
+                if (result.contains("instructions") && result["instructions"].is_string()) {
+                    self->m_instructions = result["instructions"].get<std::string>();
+                } else {
+                    self->m_instructions = "";
+                }
+            }
+
+            if (self->m_transport) {
+                self->m_transport->setProtocolVersion(self->m_negotiatedProtocolVersion);
             }
 
             self->m_state = SessionState::Initialized;
@@ -359,7 +437,8 @@ void McpClientSession::listTools(const std::string& cursor, std::function<void(c
 }
 
 void McpClientSession::callTool(const std::string& name, const json& arguments,
-                              std::function<void(const json& content, const json& error)> callback) {
+                                std::function<void(const json& content, const json& error)> callback,
+                                ProgressCallback progressCallback) {
     if (m_state != SessionState::Initialized) {
         json err = {
             {"code", -32002},
@@ -379,7 +458,7 @@ void McpClientSession::callTool(const std::string& name, const json& arguments,
         } else {
             callback(result, json::object());
         }
-    });
+    }, std::move(progressCallback));
 }
 
 void McpClientSession::listResources(std::function<void(const json& result, const json& error)> callback) {
@@ -533,6 +612,7 @@ void McpClientSession::cancelRequest(int64_t requestId) {
             cb = std::move(it->second.callback);
             m_pendingRequests.erase(it);
         }
+        m_progressHandlers.erase(requestId);
     }
     if (cb) {
         json cancelErr = {
@@ -557,6 +637,7 @@ void McpClientSession::checkRequestTimeouts(std::chrono::milliseconds timeoutLim
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - it->second.timestamp);
             if (elapsed >= timeoutLimit) {
                 expiredRequests.push_back({it->first, std::move(it->second.callback)});
+                m_progressHandlers.erase(it->first);
                 it = m_pendingRequests.erase(it);
             } else {
                 ++it;
@@ -644,12 +725,13 @@ std::vector<McpTool> McpClientSession::listToolsSync(const std::string& cursor, 
 }
 
 json McpClientSession::callToolSync(const std::string& name, const json& arguments,
-                                    json* errorOut, std::chrono::milliseconds timeout) {
+                                    json* errorOut, std::chrono::milliseconds timeout,
+                                    ProgressCallback progressCallback) {
     auto pr = std::make_shared<std::promise<std::pair<json, json>>>();
     auto fut = pr->get_future();
     callTool(name, arguments, [pr](const json& result, const json& error) {
         pr->set_value({result, error});
-    });
+    }, std::move(progressCallback));
     if (fut.wait_for(timeout) == std::future_status::ready) {
         auto res = fut.get();
         if (errorOut) *errorOut = res.second;
@@ -1005,6 +1087,139 @@ json McpClientSession::completeSync(const json& ref, const json& argument,
     return json::object();
 }
 
+// ==========================================
+// Sampling (双向: 服务端请求客户端推理)
+// ==========================================
+
+void McpClientSession::setSamplingHandler(SamplingHandler handler) {
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_samplingHandler = std::move(handler);
+    }
+
+    // 注册 sampling/createMessage 请求处理器（在锁外调用避免死锁）
+    registerRequestHandler("sampling/createMessage", [this](const std::string&, const json& params) -> json {
+        SamplingHandler samplingCb;
+        {
+            std::lock_guard<std::mutex> lk(m_mutex);
+            samplingCb = m_samplingHandler;
+        }
+        if (!samplingCb) {
+            return {{"error", {{"code", -32601}, {"message", "No sampling handler registered"}}}};
+        }
+        return samplingCb(params);
+    });
+}
+
+// ==========================================
+// Elicitation (双向: 服务端请求用户输入)
+// ==========================================
+
+void McpClientSession::setElicitationHandler(ElicitationHandler handler) {
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_elicitationHandler = std::move(handler);
+    }
+
+    // 注册 elicitation/create 请求处理器（在锁外调用避免死锁）
+    registerRequestHandler("elicitation/create", [this](const std::string&, const json& params) -> json {
+        ElicitationHandler elicitCb;
+        {
+            std::lock_guard<std::mutex> lk(m_mutex);
+            elicitCb = m_elicitationHandler;
+        }
+        if (!elicitCb) {
+            return {{"action", "declined"}};
+        }
+        return elicitCb(params);
+    });
+}
+
+// ==========================================
+// Roots (双向: 客户端暴露文件系统根目录)
+// ==========================================
+
+void McpClientSession::setRootsProvider(RootsProvider provider) {
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_rootsProvider = std::move(provider);
+    }
+
+    // 注册 roots/list 请求处理器（在锁外调用避免死锁）
+    registerRequestHandler("roots/list", [this](const std::string&, const json&) -> json {
+        RootsProvider rootsCb;
+        {
+            std::lock_guard<std::mutex> lk(m_mutex);
+            rootsCb = m_rootsProvider;
+        }
+        if (!rootsCb) {
+            return {{"roots", json::array()}};
+        }
+        return {{"roots", rootsCb()}};
+    });
+}
+
+void McpClientSession::notifyRootsListChanged() {
+    sendNotification("notifications/roots/list_changed", json::object());
+}
+
+// ==========================================
+// Notification Debounce (通知去重/合并)
+// ==========================================
+
+void McpClientSession::enableNotificationDebounce(const std::string& method,
+                                                   std::chrono::milliseconds debounceWindow) {
+    std::lock_guard<std::mutex> lock(m_debounceMutex);
+    auto& state = m_debounceStates[method];
+    state.window = debounceWindow;
+}
+
+void McpClientSession::sendNotificationDebounced(const std::string& method, const json& params) {
+    std::lock_guard<std::mutex> lock(m_debounceMutex);
+    auto it = m_debounceStates.find(method);
+    if (it == m_debounceStates.end()) {
+        // 未配置去重，直接发送
+        sendNotification(method, params);
+        return;
+    }
+
+    auto& state = it->second;
+    state.lastParamsJson = params.dump();
+
+    // 如果定时器已在运行，只更新 params（自然去重）
+    if (state.timerActive) {
+        return;
+    }
+
+    // 启动新定时器
+    state.timerActive = true;
+    auto window = state.window;
+    auto paramsJson = state.lastParamsJson;
+
+    // 在后台线程延迟发送
+    std::thread([this, method, paramsJson, window]() {
+        std::this_thread::sleep_for(window);
+
+        std::string finalParams;
+        {
+            std::lock_guard<std::mutex> lock(m_debounceMutex);
+            auto st = m_debounceStates.find(method);
+            if (st != m_debounceStates.end()) {
+                finalParams = st->second.lastParamsJson;
+                st->second.timerActive = false;
+            }
+        }
+
+        if (!finalParams.empty()) {
+            try {
+                sendNotification(method, json::parse(finalParams));
+            } catch (...) {
+                sendNotification(method, json::object());
+            }
+        }
+    }).detach();
+}
+
 void McpClientSession::setLogCallback(LogCallback callback) {
     std::lock_guard<std::mutex> lock(m_mutex);
     m_logCallback = std::move(callback);
@@ -1019,6 +1234,41 @@ void McpClientSession::log(LogLevel level, const std::string& message) {
     if (cb) {
         cb(level, message);
     }
+}
+
+void McpClientSession::registerCapabilities(const json& capabilities) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (!capabilities.is_object()) {
+        return;
+    }
+    for (auto it = capabilities.begin(); it != capabilities.end(); ++it) {
+        const std::string& key = it.key();
+        if (m_capabilities.contains(key) && m_capabilities[key].is_object() && it.value().is_object()) {
+            m_capabilities[key].update(it.value());
+        } else {
+            m_capabilities[key] = it.value();
+        }
+    }
+}
+
+std::string McpClientSession::getNegotiatedProtocolVersion() const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_negotiatedProtocolVersion;
+}
+
+json McpClientSession::getServerCapabilities() const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_serverCapabilities;
+}
+
+json McpClientSession::getServerVersion() const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_serverVersion;
+}
+
+std::string McpClientSession::getInstructions() const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_instructions;
 }
 
 } // namespace mcp

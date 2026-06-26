@@ -27,6 +27,16 @@ void runAllLocalTests() {
     TM_RUN_TEST(test_complete);
     TM_RUN_TEST(test_elicitation);
     TM_RUN_TEST(test_tool_annotations);
+    TM_RUN_TEST(test_protocol_negotiation);
+    TM_RUN_TEST(test_progress_notification);
+
+    // 4. New Capabilities Tests (双向能力 + OAuth + 去重)
+    TmTestRunner::instance().startTestSuite("New Capabilities Tests");
+    TM_RUN_TEST(test_sampling);
+    TM_RUN_TEST(test_roots);
+    TM_RUN_TEST(test_elicitation_full);
+    TM_RUN_TEST(test_oauth_client);
+    TM_RUN_TEST(test_notification_debounce);
 
     TmTestRunner::instance().printSummary();
 

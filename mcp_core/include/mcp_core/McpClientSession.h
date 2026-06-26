@@ -6,6 +6,9 @@
 #include <mutex>
 #include <atomic>
 #include <future>
+#include <chrono>
+#include <thread>
+#include <vector>
 #include "IMcpTransport.h"
 #include "McpMessage.h"
 #include "McpTool.h"
@@ -40,9 +43,37 @@ class McpClientSession : public std::enable_shared_from_this<McpClientSession> {
 public:
     static constexpr auto MCP_PROTOCOL_VERSION = "2025-11-25";
 
+    // 客户端支持的协议版本列表（按优先级排序，最新在前）
+    static inline const std::vector<std::string> SUPPORTED_PROTOCOL_VERSIONS = {
+        "2025-11-25",
+        "2025-06-18",
+        "2025-03-26"
+    };
+
     using ResponseCallback = std::function<void(const json& result, const json& error)>;
     using NotificationCallback = std::function<void(const json& params)>;
     using RequestCallback = std::function<json(const std::string& method, const json& params)>;
+    using ProgressCallback = std::function<void(const json& progressInfo)>;
+
+    /**
+     * @brief Handler for sampling/createMessage requests from the server.
+     *        Server asks client to perform LLM inference.
+     *        Returns the CreateMessageResult: {model, role, content, ...}
+     */
+    using SamplingHandler = std::function<json(const json& params)>;
+
+    /**
+     * @brief Handler for elicitation/create requests from the server.
+     *        Server asks client to collect user input.
+     *        Returns: {action, content} or {action:"declined"} or {action:"cancelled"}
+     */
+    using ElicitationHandler = std::function<json(const json& params)>;
+
+    /**
+     * @brief Provider for roots/list requests from the server.
+     *        Returns an array of root objects: [{uri, name}, ...]
+     */
+    using RootsProvider = std::function<json()>;
 
     struct PendingRequest {
         ResponseCallback callback;
@@ -71,7 +102,7 @@ public:
      * @brief Send a JSON-RPC request asynchronously.
      * @return The request ID.
      */
-    int64_t sendRequest(const std::string& method, const json& params, ResponseCallback callback);
+    int64_t sendRequest(const std::string& method, const json& params, ResponseCallback callback, ProgressCallback progressCallback = nullptr);
 
     /**
      * @brief Active cancellation of a pending request by ID.
@@ -125,7 +156,8 @@ public:
      * @brief Execute/call a specific tool on the MCP server.
      */
     void callTool(const std::string& name, const json& arguments,
-                  std::function<void(const json& content, const json& error)> callback);
+                  std::function<void(const json& content, const json& error)> callback,
+                  ProgressCallback progressCallback = nullptr);
 
     /**
      * @brief List the resources exposed by the MCP server.
@@ -190,6 +222,64 @@ public:
     void complete(const json& ref, const json& argument, std::function<void(const json& completion, const json& error)> callback);
 
     // ==========================================
+    // Sampling (双向: 服务端请求客户端推理)
+    // ==========================================
+
+    /**
+     * @brief Register a handler for sampling/createMessage requests.
+     *        When the server sends a sampling/createMessage request, the handler is called
+     *        to perform LLM inference and return the result.
+     */
+    void setSamplingHandler(SamplingHandler handler);
+
+    // ==========================================
+    // Elicitation (双向: 服务端请求用户输入)
+    // ==========================================
+
+    /**
+     * @brief Register a handler for elicitation/create requests.
+     *        When the server sends an elicitation/create request, the handler is called
+     *        to collect user input via form or URL.
+     */
+    void setElicitationHandler(ElicitationHandler handler);
+
+    // ==========================================
+    // Roots (双向: 客户端暴露文件系统根目录)
+    // ==========================================
+
+    /**
+     * @brief Register a provider for roots/list requests.
+     *        When the server requests roots/list, the provider returns the root array.
+     */
+    void setRootsProvider(RootsProvider provider);
+
+    /**
+     * @brief Notify the server that the roots list has changed.
+     *        Sends notifications/roots/list_changed.
+     */
+    void notifyRootsListChanged();
+
+    // ==========================================
+    // Notification Debounce (通知去重/合并)
+    // ==========================================
+
+    /**
+     * @brief Enable debouncing for a notification method.
+     *        Rapid consecutive notifications of the same method will be merged:
+     *        only the last one within the debounce window is actually sent.
+     * @param method The notification method to debounce.
+     * @param debounceWindow The time window for merging notifications.
+     */
+    void enableNotificationDebounce(const std::string& method,
+                                    std::chrono::milliseconds debounceWindow = std::chrono::milliseconds(100));
+
+    /**
+     * @brief Send a notification with automatic debounce if configured.
+     *        If the method has debounce enabled, rapid calls are merged.
+     */
+    void sendNotificationDebounced(const std::string& method, const json& params);
+
+    // ==========================================
     // Synchronous Blocking APIs (Helper wrappers)
     // ==========================================
     
@@ -206,7 +296,8 @@ public:
 
     json callToolSync(const std::string& name, const json& arguments,
                       json* errorOut = nullptr,
-                      std::chrono::milliseconds timeout = std::chrono::milliseconds(5000));
+                      std::chrono::milliseconds timeout = std::chrono::milliseconds(5000),
+                      ProgressCallback progressCallback = nullptr);
 
     json listResourcesSync(std::chrono::milliseconds timeout = std::chrono::milliseconds(5000), json* errorOut = nullptr);
     
@@ -255,6 +346,12 @@ public:
 
     void setLogCallback(LogCallback callback);
 
+    void registerCapabilities(const json& capabilities);
+    std::string getNegotiatedProtocolVersion() const;
+    json getServerCapabilities() const;
+    json getServerVersion() const;
+    std::string getInstructions() const;
+
     SessionState state() const { return m_state; }
 
 private:
@@ -266,14 +363,41 @@ private:
     void log(LogLevel level, const std::string& message);
 
     std::shared_ptr<IMcpTransport> m_transport;
-    std::mutex m_mutex;
+    mutable std::mutex m_mutex;
     int64_t m_nextId = 1;
-    
+
     std::unordered_map<int64_t, PendingRequest> m_pendingRequests;
+    std::unordered_map<int64_t, ProgressCallback> m_progressHandlers;
     std::unordered_map<std::string, NotificationCallback> m_notificationHandlers;
     std::unordered_map<std::string, RequestCallback> m_requestHandlers;
     std::atomic<SessionState> m_state{SessionState::Uninitialized};
     LogCallback m_logCallback;
+
+    // 双向能力处理器
+    SamplingHandler m_samplingHandler;
+    ElicitationHandler m_elicitationHandler;
+    RootsProvider m_rootsProvider;
+
+    // 通知去重状态
+    struct DebounceState {
+        std::chrono::milliseconds window{100};
+        std::string lastParamsJson;
+        std::thread timerThread;
+        std::mutex timerMutex;
+        bool timerActive = false;
+    };
+    std::unordered_map<std::string, DebounceState> m_debounceStates;
+    mutable std::mutex m_debounceMutex;
+
+    json m_capabilities = {
+        {"roots", {{"listChanged", false}}},
+        {"sampling", json::object()},
+        {"elicitation", {{"modes", {"form", "url"}}}}
+    };
+    std::string m_negotiatedProtocolVersion;
+    json m_serverCapabilities;
+    json m_serverVersion;
+    std::string m_instructions;
 };
 
 } // namespace mcp

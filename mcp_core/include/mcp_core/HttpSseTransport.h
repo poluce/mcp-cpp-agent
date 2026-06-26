@@ -38,6 +38,7 @@ public:
     void setOnError(std::function<void(const std::string&)> callback) override;
     bool start() override;
     void close() override;
+    void setProtocolVersion(const std::string& version) override;
 
     // SSE 流式数据回调（由 libcurl WRITEFUNCTION 调用）
     void onSseData(const char* data, size_t len);
@@ -49,6 +50,7 @@ private:
     std::string m_sseUrl;
     std::string m_postUrl;
     std::string m_sessionId;
+    std::string m_protocolVersion{"2025-11-25"};
 
     std::function<void(const std::string&)> m_onMessage;
     std::function<void()> m_onClose;
@@ -57,7 +59,7 @@ private:
     std::thread m_sseThread;
     std::atomic<bool> m_running{false};
     std::atomic<bool> m_closed{false};
-    std::mutex m_sendMutex;
+    std::recursive_mutex m_sendMutex;
 
     std::string m_sseBuffer; // SSE 数据块缓冲区
 };

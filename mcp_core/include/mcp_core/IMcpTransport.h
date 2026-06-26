@@ -14,6 +14,11 @@ public:
     virtual ~IMcpTransport() = default;
 
     /**
+     * @brief Set the negotiated protocol version (useful for HTTP SSE transport metadata).
+     */
+    virtual void setProtocolVersion(const std::string& version) {}
+
+    /**
      * @brief Send a raw text message over the transport.
      * @param message The serialized JSON-RPC message.
      * @return true if successfully sent, false otherwise.

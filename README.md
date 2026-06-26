@@ -129,18 +129,12 @@ public:
 
 ---
 
-## 构建选项
-
-| CMake 选项 | 默认值 | 说明 |
-|------------|--------|------|
-| `MCP_ENABLE_QT` | `OFF` | 启用 Qt6 传输扩展和调试器示例 |
+## 构建方法
 
 ```bash
-# 仅构建 SDK（零外部依赖）
+# 构建项目与测试
 cmake -B build
-
-# 启用 Qt 扩展 + 调试器示例
-cmake -B build -DMCP_ENABLE_QT=ON -DCMAKE_PREFIX_PATH="/path/to/qt6"
+cmake --build build
 ```
 
 ---
@@ -160,15 +154,7 @@ mcp-cpp-agent/
  │    │    └── JsonRpcDispatcher.h       # 协议分发器
  │    └── src/
  │
- ├── extensions/qt/            # Qt6 可选扩展
- │    ├── include/mcp_qt/               # QtStdioTransport, QtHttpTransport, QtMcpClient
- │    └── src/
- │
- ├── examples/
- │    └── debugger/            # Qt GUI 调试面板示例
- │
  ├── tests/                    # 测试用例
- ├── conformance_runner/       # 协议一致性测试
  └── CMakeLists.txt
 ```
 
@@ -176,6 +162,4 @@ mcp-cpp-agent/
 
 ## 依赖
 
-- **SDK 核心**：C++17 编译器 + nlohmann/json（自动 FetchContent）
-- **Qt 扩展**（可选）：Qt6 Core & Network
-- **调试器示例**（可选）：Qt6 Widgets
+- **SDK 核心**：C++17 编译器 + nlohmann/json（自动 FetchContent） + libcurl（自动 FetchContent）

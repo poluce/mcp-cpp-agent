@@ -10,21 +10,33 @@ namespace mcp {
 static std::string resolveUrl(const std::string& base, const std::string& relative) {
     if (relative.empty()) return base;
     if (relative.find("://") != std::string::npos) return relative;
+    
+    auto schemeEnd = base.find("://");
+    size_t hostStart = (schemeEnd != std::string::npos) ? schemeEnd + 3 : 0;
+    
     if (relative[0] == '/') {
         // 绝对路径：替换 base 的 path 部分
-        auto schemeEnd = base.find("://");
-        if (schemeEnd != std::string::npos) {
-            auto hostStart = schemeEnd + 3;
-            auto pathStart = base.find('/', hostStart);
-            if (pathStart != std::string::npos) {
-                return base.substr(0, pathStart) + relative;
-            }
+        auto pathStart = base.find('/', hostStart);
+        if (pathStart != std::string::npos) {
+            return base.substr(0, pathStart) + relative;
         }
         return base + relative;
     }
-    // 相对路径：基于 base 的目录
+    
+    // 相对路径
+    auto pathStart = base.find('/', hostStart);
+    if (pathStart == std::string::npos) {
+        // base 只是域名，如 http://localhost:8080
+        return base + "/" + relative;
+    }
+    
+    // base 带有路径，如 http://localhost:8080/mcp
     auto lastSlash = base.rfind('/');
-    if (lastSlash != std::string::npos) {
+    if (lastSlash != std::string::npos && lastSlash >= hostStart) {
+        std::string lastPart = base.substr(lastSlash + 1);
+        if (!lastPart.empty() && lastPart.find('.') == std::string::npos) {
+            return base + "/" + relative;
+        }
         return base.substr(0, lastSlash + 1) + relative;
     }
     return base + "/" + relative;
@@ -75,7 +87,7 @@ HttpSseTransport::HttpSseTransport(const std::string& sseUrl)
     ensureCurlInit();
 
     // 默认 POST endpoint（SSE endpoint 事件可能覆盖）
-    m_postUrl = resolveUrl(sseUrl, "message");
+    m_postUrl = sseUrl;
 }
 
 HttpSseTransport::~HttpSseTransport() {
@@ -96,7 +108,7 @@ bool HttpSseTransport::start() {
 bool HttpSseTransport::send(const std::string& message) {
     if (m_closed || m_postUrl.empty()) return false;
 
-    std::lock_guard<std::mutex> lock(m_sendMutex);
+    std::lock_guard<std::recursive_mutex> lock(m_sendMutex);
     return doPost(message);
 }
 
@@ -118,10 +130,14 @@ void HttpSseTransport::close() {
     m_running = false;
 
     if (m_sseThread.joinable()) {
-        m_sseThread.join();
+        m_sseThread.detach(); // 使用 detach() 代替 join()，防止后台阻塞的 curl_easy_perform 导致进程退出时卡死
     }
 
     if (m_onClose) m_onClose();
+}
+
+void HttpSseTransport::setProtocolVersion(const std::string& version) {
+    m_protocolVersion = version;
 }
 
 // SSE 流式数据处理：累积缓冲区，按 "\n\n" 分割 SSE 事件块
@@ -147,9 +163,14 @@ void HttpSseTransport::onSseData(const char* data, size_t len) {
                 size_t s = eventType.find_first_not_of(" \t");
                 if (s != std::string::npos) eventType = eventType.substr(s);
             } else if (line.compare(0, 5, "data:") == 0) {
-                dataContent = line.substr(5);
-                size_t s = dataContent.find_first_not_of(" \t");
-                if (s != std::string::npos) dataContent = dataContent.substr(s);
+                std::string currentData = line.substr(5);
+                size_t s = currentData.find_first_not_of(" \t");
+                if (s != std::string::npos) currentData = currentData.substr(s);
+                
+                if (!dataContent.empty()) {
+                    dataContent += "\n";
+                }
+                dataContent += currentData;
             }
         }
 
@@ -178,6 +199,7 @@ void HttpSseTransport::sseReadLoop() {
 
         // 配置 SSE GET 请求
         curl_easy_setopt(curl, CURLOPT_URL, m_sseUrl.c_str());
+        curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L); // 禁用信号以确保多线程环境下的健壮性
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, sseWriteCallback);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, this);
         curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
@@ -186,7 +208,8 @@ void HttpSseTransport::sseReadLoop() {
         // 设置请求头
         struct curl_slist* headers = nullptr;
         headers = curl_slist_append(headers, "Accept: text/event-stream");
-        headers = curl_slist_append(headers, "MCP-Protocol-Version: 2025-11-25");
+        std::string versionHeader = "MCP-Protocol-Version: " + m_protocolVersion;
+        headers = curl_slist_append(headers, versionHeader.c_str());
         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
 
         if (m_onError) m_onError("SSE connecting to: " + m_sseUrl);
@@ -223,6 +246,7 @@ bool HttpSseTransport::doPost(const std::string& body) {
     std::string responseBody;
 
     curl_easy_setopt(curl, CURLOPT_URL, m_postUrl.c_str());
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L); // 禁用信号以确保多线程环境下的健壮性
     curl_easy_setopt(curl, CURLOPT_POST, 1L);
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body.c_str());
     curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(body.size()));
@@ -235,7 +259,8 @@ bool HttpSseTransport::doPost(const std::string& body) {
     struct curl_slist* headers = nullptr;
     headers = curl_slist_append(headers, "Content-Type: application/json");
     headers = curl_slist_append(headers, "Accept: application/json, text/event-stream");
-    headers = curl_slist_append(headers, "MCP-Protocol-Version: 2025-11-25");
+    std::string versionHeader = "MCP-Protocol-Version: " + m_protocolVersion;
+    headers = curl_slist_append(headers, versionHeader.c_str());
 
     if (!m_sessionId.empty()) {
         std::string sid = "MCP-Session-Id: " + m_sessionId;
@@ -266,9 +291,8 @@ bool HttpSseTransport::doPost(const std::string& body) {
         return false;
     }
 
-    // 解析响应中的 SSE 数据行（服务端可能在 POST 响应中直接返回 SSE 流）
+    // 解析响应中的 SSE 数据行（服务端可能在 POST 响应中直接返回 SSE 流，或者直接返回普通 JSON）
     if (!responseBody.empty()) {
-        // 检查是否是 SSE 格式
         if (responseBody.find("data:") != std::string::npos) {
             std::istringstream stream(responseBody);
             std::string line;
@@ -282,6 +306,10 @@ bool HttpSseTransport::doPost(const std::string& body) {
                         m_onMessage(data);
                     }
                 }
+            }
+        } else {
+            if (m_onMessage) {
+                m_onMessage(responseBody);
             }
         }
     }

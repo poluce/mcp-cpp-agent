@@ -161,10 +161,15 @@ private:
 class MockTransport : public mcp::IMcpTransport {
 public:
     std::string lastSentMessage;
+    std::string negotiatedProtocolVersion;
     std::function<void(const std::string&)> onSendCallback;
     std::function<void(const std::string&)> m_onMessage;
     std::function<void()> m_onClose;
     std::function<void(const std::string&)> m_onError;
+
+    void setProtocolVersion(const std::string& version) override {
+        negotiatedProtocolVersion = version;
+    }
     
     std::mutex m_mockMutex;
     std::vector<std::thread> m_threads;
@@ -261,6 +266,13 @@ void test_resource_templates();
 void test_complete();
 void test_elicitation();
 void test_tool_annotations();
+void test_protocol_negotiation();
+void test_progress_notification();
+void test_sampling();
+void test_roots();
+void test_elicitation_full();
+void test_oauth_client();
+void test_notification_debounce();
 
 void test_with_filesystem_server();
 void test_with_anysearch_mcp();

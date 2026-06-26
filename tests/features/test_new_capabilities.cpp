@@ -418,3 +418,162 @@ void test_tool_annotations() {
         TM_ASSERT_FALSE(tool.annotations.readOnlyHint, "readOnlyHint should be false");
     }
 }
+
+void test_protocol_negotiation() {
+    auto transport = std::make_shared<MockTransport>();
+    auto session = std::make_shared<mcp::McpClientSession>(transport);
+    session->init();
+    session->start();
+
+    // 注册额外的客户端能力
+    mcp::json additionalCapabilities = {
+        {"customFeature", {{"enabled", true}}},
+        {"roots", {{"listChanged", true}}}
+    };
+    session->registerCapabilities(additionalCapabilities);
+
+    // 抓取 initialize 发出的请求
+    mcp::json sentParams;
+    transport->onSendCallback = [&](const std::string& msg) {
+        mcp::json j = mcp::json::parse(msg);
+        if (j.contains("method") && j["method"] == "initialize") {
+            sentParams = j["params"];
+        }
+    };
+
+    session->initialize("test-client", "1.0.0", [](bool, const mcp::json&) {});
+
+    // 校验发出的 capabilities 是不是已经正确 merge
+    TM_ASSERT_TRUE(sentParams.contains("capabilities"), "sent initialize should contain capabilities");
+    TM_ASSERT_TRUE(sentParams["capabilities"].contains("roots"), "should contain roots capability");
+    TM_ASSERT_TRUE(sentParams["capabilities"]["roots"]["listChanged"].get<bool>(), "listChanged should be updated to true");
+    TM_ASSERT_TRUE(sentParams["capabilities"].contains("customFeature"), "should contain customFeature");
+    TM_ASSERT_TRUE(sentParams["capabilities"]["customFeature"]["enabled"].get<bool>(), "customFeature enabled should be true");
+
+    // 模拟服务端的 initialize 响应，携带 negotiatedVersion, server capabilities
+    mcp::json mockResponse = {
+        {"jsonrpc", "2.0"},
+        {"id", 1},
+        {"result", {
+            {"protocolVersion", "2025-11-25"},
+            {"capabilities", {
+                {"logging", mcp::json::object()},
+                {"tools", {{"listChanged", true}}}
+            }},
+            {"serverInfo", {{"name", "awesome-mcp-server"}, {"version", "2.0.1"}}},
+            {"instructions", "Always speak Chinese"}
+        }}
+    };
+    transport->pushServerMessage(mockResponse.dump());
+
+    // 校验协商出的能力和版本是否已在客户端存下
+    TM_ASSERT_EQ(session->getNegotiatedProtocolVersion(), "2025-11-25", "Negotiated version should be stored");
+    
+    mcp::json servCap = session->getServerCapabilities();
+    TM_ASSERT_TRUE(servCap.contains("tools"), "Server capabilities should contain tools");
+    TM_ASSERT_TRUE(servCap["tools"]["listChanged"].get<bool>(), "Server tools listChanged should be true");
+
+    mcp::json servVer = session->getServerVersion();
+    TM_ASSERT_EQ(servVer["name"].get<std::string>(), "awesome-mcp-server", "Server name should be stored");
+    TM_ASSERT_EQ(servVer["version"].get<std::string>(), "2.0.1", "Server version should be stored");
+
+    TM_ASSERT_EQ(session->getInstructions(), "Always speak Chinese", "Server instructions should be stored");
+    TM_ASSERT_EQ(transport->negotiatedProtocolVersion, "2025-11-25", "Protocol version should be passed down to transport");
+}
+
+void test_progress_notification() {
+    auto transport = std::make_shared<MockTransport>();
+    auto session = std::make_shared<mcp::McpClientSession>(transport);
+    session->init();
+    session->start();
+
+    // 先初始化
+    session->initialize("test-client", "1.0.0", [](bool, const mcp::json&) {});
+    mcp::json mockInitResponse = {
+        {"jsonrpc", "2.0"}, {"id", 1},
+        {"result", {
+            {"protocolVersion", "2025-11-25"},
+            {"capabilities", mcp::json::object()},
+            {"serverInfo", {{"name", "mock"}, {"version", "1"}}}
+        }}
+    };
+    transport->pushServerMessage(mockInitResponse.dump());
+
+    // 跟踪进度通知
+    int progressCount = 0;
+    double lastProgress = 0.0;
+    double lastTotal = 0.0;
+
+    // 发送一个 callTool 请求并携带进度处理器
+    mcp::json callArgs = {{"count", 10}};
+    session->callTool("test_progress_tool", callArgs, [](const mcp::json&, const mcp::json&) {},
+        [&](const mcp::json& progressInfo) {
+            progressCount++;
+            if (progressInfo.contains("progress")) {
+                lastProgress = progressInfo["progress"].get<double>();
+            }
+            if (progressInfo.contains("total")) {
+                lastTotal = progressInfo["total"].get<double>();
+            }
+        }
+    );
+
+    // 检查发送的 params，看是否在 _meta.progressToken 塞入了请求 ID (应当为 2)
+    mcp::json callReq = mcp::json::parse(transport->lastSentMessage);
+    TM_ASSERT_EQ(callReq["method"].get<std::string>(), "tools/call", "Should be tools/call method");
+    TM_ASSERT_TRUE(callReq["params"].contains("_meta"), "Request params should contain _meta");
+    TM_ASSERT_EQ(callReq["params"]["_meta"]["progressToken"].get<int64_t>(), 2, "ProgressToken should match message ID");
+
+    // 模拟服务端在执行中发出进度通知
+    mcp::json progressNotif1 = {
+        {"jsonrpc", "2.0"},
+        {"method", "notifications/progress"},
+        {"params", {
+            {"progressToken", 2},
+            {"progress", 3},
+            {"total", 10}
+        }}
+    };
+    transport->pushServerMessage(progressNotif1.dump());
+
+    TM_ASSERT_EQ(progressCount, 1, "Should receive 1 progress notification");
+    TM_ASSERT_EQ(lastProgress, 3.0, "Progress should be 3");
+    TM_ASSERT_EQ(lastTotal, 10.0, "Total should be 10");
+
+    mcp::json progressNotif2 = {
+        {"jsonrpc", "2.0"},
+        {"method", "notifications/progress"},
+        {"params", {
+            {"progressToken", 2},
+            {"progress", 7},
+            {"total", 10}
+        }}
+    };
+    transport->pushServerMessage(progressNotif2.dump());
+
+    TM_ASSERT_EQ(progressCount, 2, "Should receive 2 progress notifications");
+    TM_ASSERT_EQ(lastProgress, 7.0, "Progress should be 7");
+
+    // 模拟最终 tools/call 的 response
+    mcp::json callResp = {
+        {"jsonrpc", "2.0"},
+        {"id", 2},
+        {"result", {{"content", {{"type", "text"}, {"text", "done"}}}}}
+    };
+    transport->pushServerMessage(callResp.dump());
+
+    // 再模拟一个进度通知，看在最终 response 结束后是否还会处理（应当已经被 erase）
+    mcp::json progressNotifPost = {
+        {"jsonrpc", "2.0"},
+        {"method", "notifications/progress"},
+        {"params", {
+            {"progressToken", 2},
+            {"progress", 10},
+            {"total", 10}
+        }}
+    };
+    transport->pushServerMessage(progressNotifPost.dump());
+
+    TM_ASSERT_EQ(progressCount, 2, "Should NOT process progress after request completed");
+}
+
