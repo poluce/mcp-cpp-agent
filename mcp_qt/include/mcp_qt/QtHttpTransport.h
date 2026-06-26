@@ -45,7 +45,8 @@ private:
     std::function<void(const std::string&)> m_onError;
 
     QByteArray m_sseBuffer;
-    
+    QString m_sessionId;  // MCP-Session-Id from server (for session-aware transport)
+
     // For Streamable HTTP spec requirements:
     QString m_lastEventId;
     QTimer* m_reconnectTimer;

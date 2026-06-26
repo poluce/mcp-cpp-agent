@@ -40,6 +40,7 @@ public:
 
     using ResponseCallback = std::function<void(const json& result, const json& error)>;
     using NotificationCallback = std::function<void(const json& params)>;
+    using RequestCallback = std::function<json(const std::string& method, const json& params)>;
 
     struct PendingRequest {
         ResponseCallback callback;
@@ -89,6 +90,13 @@ public:
      * @brief Register a callback for incoming notifications from the server.
      */
     void registerNotificationHandler(const std::string& method, NotificationCallback callback);
+
+    /**
+     * @brief Register a handler for incoming JSON-RPC requests from the server.
+     * The handler should return the result object for the response.
+     * If no handler is registered, the session auto-replies with -32601 (Method not found).
+     */
+    void registerRequestHandler(const std::string& method, RequestCallback callback);
 
     /**
      * @brief Perform the standard MCP initialization handshake.
@@ -228,6 +236,7 @@ private:
     
     std::unordered_map<int64_t, PendingRequest> m_pendingRequests;
     std::unordered_map<std::string, NotificationCallback> m_notificationHandlers;
+    std::unordered_map<std::string, RequestCallback> m_requestHandlers;
     std::atomic<SessionState> m_state{SessionState::Uninitialized};
     LogCallback m_logCallback;
 };

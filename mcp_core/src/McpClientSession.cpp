@@ -10,31 +10,35 @@ McpClientSession::~McpClientSession() {
 }
 
 void McpClientSession::init() {
-    auto self = shared_from_this();
-    m_transport->setOnMessage([self](const std::string& msg) {
-        self->handleIncomingMessage(msg);
+    std::weak_ptr<McpClientSession> weakSelf = shared_from_this();
+    m_transport->setOnMessage([weakSelf](const std::string& msg) {
+        if (auto self = weakSelf.lock()) {
+            self->handleIncomingMessage(msg);
+        }
     });
 
-    m_transport->setOnClose([self]() {
-        self->log(LogLevel::Warning, "Transport connection closed. Releasing all pending requests.");
-        self->m_state = SessionState::Shutdown;
-        
-        std::vector<ResponseCallback> callbacks;
-        {
-            std::lock_guard<std::mutex> lock(self->m_mutex);
-            for (auto& pair : self->m_pendingRequests) {
-                callbacks.push_back(std::move(pair.second.callback));
+    m_transport->setOnClose([weakSelf]() {
+        if (auto self = weakSelf.lock()) {
+            self->log(LogLevel::Warning, "Transport connection closed. Releasing all pending requests.");
+            self->m_state = SessionState::Shutdown;
+            
+            std::vector<ResponseCallback> callbacks;
+            {
+                std::lock_guard<std::mutex> lock(self->m_mutex);
+                for (auto& pair : self->m_pendingRequests) {
+                    callbacks.push_back(std::move(pair.second.callback));
+                }
+                self->m_pendingRequests.clear();
             }
-            self->m_pendingRequests.clear();
-        }
 
-        for (auto& cb : callbacks) {
-            if (cb) {
-                json connErr = {
-                    {"code", -32603},
-                    {"message", "Connection interrupted or server crashed"}
-                };
-                cb(json::object(), connErr);
+            for (auto& cb : callbacks) {
+                if (cb) {
+                    json connErr = {
+                        {"code", -32603},
+                        {"message", "Connection interrupted or server crashed"}
+                    };
+                    cb(json::object(), connErr);
+                }
             }
         }
     });
@@ -87,6 +91,11 @@ void McpClientSession::registerNotificationHandler(const std::string& method, No
     m_notificationHandlers[method] = callback;
 }
 
+void McpClientSession::registerRequestHandler(const std::string& method, RequestCallback callback) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_requestHandlers[method] = callback;
+}
+
 void McpClientSession::handleIncomingMessage(const std::string& rawMessage) {
     log(LogLevel::Debug, "handleIncomingMessage: " + rawMessage);
     json j;
@@ -128,16 +137,21 @@ void McpClientSession::handleResponse(const json& responseJson) {
     }
 
     ResponseCallback cb;
+    bool found = false;
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         auto it = m_pendingRequests.find(id);
         if (it != m_pendingRequests.end()) {
             cb = std::move(it->second.callback);
             m_pendingRequests.erase(it);
-            log(LogLevel::Info, "Processing response for id=" + std::to_string(id));
-        } else {
-            log(LogLevel::Warning, "Received response for unregistered id=" + std::to_string(id));
+            found = true;
         }
+    }
+
+    if (found) {
+        log(LogLevel::Info, "Processing response for id=" + std::to_string(id));
+    } else {
+        log(LogLevel::Warning, "Received response for unregistered id=" + std::to_string(id));
     }
 
     if (cb) {
@@ -168,7 +182,30 @@ void McpClientSession::handleNotification(const json& notificationJson) {
 void McpClientSession::handleRequestFromServer(const json& requestJson) {
     int64_t id = requestJson["id"].get<int64_t>();
     std::string method = requestJson["method"].get<std::string>();
-    
+    json params = requestJson.contains("params") ? requestJson["params"] : json::object();
+
+    // Check for a registered handler first
+    RequestCallback handler;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        auto it = m_requestHandlers.find(method);
+        if (it != m_requestHandlers.end()) {
+            handler = it->second;
+        }
+    }
+
+    if (handler) {
+        json result = handler(method, params);
+        json response = {
+            {"jsonrpc", "2.0"},
+            {"id", id},
+            {"result", result}
+        };
+        m_transport->send(response.dump());
+        return;
+    }
+
+    // Default: return Method not found
     json errorResponse = {
         {"jsonrpc", "2.0"},
         {"id", id},
@@ -262,10 +299,18 @@ void McpClientSession::listTools(std::function<void(const std::vector<McpTool>& 
             callback({}, error);
         } else {
             std::vector<McpTool> toolsList;
+            bool parseOk = true;
             if (result.contains("tools") && result["tools"].is_array()) {
                 for (const auto& item : result["tools"]) {
-                    toolsList.push_back(item.get<McpTool>());
+                    try {
+                        toolsList.push_back(item.get<McpTool>());
+                    } catch (...) {
+                        parseOk = false;
+                    }
                 }
+            }
+            if (!parseOk) {
+                toolsList.clear();
             }
             callback(toolsList, json::object());
         }
@@ -291,10 +336,18 @@ void McpClientSession::listTools(const std::string& cursor, std::function<void(c
         } else {
             std::vector<McpTool> toolsList;
             std::string nextCursor;
+            bool parseOk = true;
             if (result.contains("tools") && result["tools"].is_array()) {
                 for (const auto& item : result["tools"]) {
-                    toolsList.push_back(item.get<McpTool>());
+                    try {
+                        toolsList.push_back(item.get<McpTool>());
+                    } catch (...) {
+                        parseOk = false;
+                    }
                 }
+            }
+            if (!parseOk) {
+                toolsList.clear();
             }
             if (result.contains("nextCursor") && result["nextCursor"].is_string()) {
                 nextCursor = result["nextCursor"].get<std::string>();
@@ -502,7 +555,6 @@ void McpClientSession::checkRequestTimeouts(std::chrono::milliseconds timeoutLim
         for (auto it = m_pendingRequests.begin(); it != m_pendingRequests.end(); ) {
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - it->second.timestamp);
             if (elapsed >= timeoutLimit) {
-                log(LogLevel::Warning, "Request timed out: id=" + std::to_string(it->first));
                 expiredRequests.push_back({it->first, std::move(it->second.callback)});
                 it = m_pendingRequests.erase(it);
             } else {
@@ -512,6 +564,7 @@ void McpClientSession::checkRequestTimeouts(std::chrono::milliseconds timeoutLim
     }
 
     for (auto& pair : expiredRequests) {
+        log(LogLevel::Warning, "Request timed out: id=" + std::to_string(pair.first));
         if (pair.second) {
             json timeoutErr = {
                 {"code", -32001},
@@ -752,7 +805,7 @@ int64_t McpClientSession::sendRequestRaw(const std::string& method, const std::s
         }
     }
     return sendRequest(method, params, [callback](const json& res, const json& err) {
-        callback(res.dump(), err.dump());
+        callback(res.dump(), err.empty() ? "" : err.dump());
     });
 }
 
@@ -769,7 +822,7 @@ void McpClientSession::callToolRaw(const std::string& name, const std::string& a
         }
     }
     callTool(name, args, [callback](const json& res, const json& err) {
-        callback(res.dump(), err.dump());
+        callback(res.dump(), err.empty() ? "" : err.dump());
     });
 }
 

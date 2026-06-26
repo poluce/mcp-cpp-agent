@@ -1,11 +1,7 @@
 #include "tests/common.h"
 
 void test_error_response() {
-    std::cout << "[Error Response Test] Running JSON-RPC standard error response tests...\n";
-
-    // ----------------------------------------------------
-    // Scenario 2: Server-side unknown method request (Auto reply Method not found)
-    // ----------------------------------------------------
+    // Scenario 1: Server-side unknown method request (Auto reply Method not found)
     {
         auto transport = std::make_shared<MockTransport>();
         auto session = std::make_shared<mcp::McpClientSession>(transport);
@@ -30,13 +26,10 @@ void test_error_response() {
         };
         transport->pushServerMessage(unknownReq.dump());
 
-        assert(methodNotFoundSent && "Scenario 2 Failed: Client did not reply with Method not found (-32601) error.");
-        std::cout << "  [✓] Scenario 2: Handle server-side unknown method requests\n";
+        TM_ASSERT_TRUE(methodNotFoundSent, "Scenario 1: Client did not reply with Method not found (-32601) error.");
     }
 
-    // ----------------------------------------------------
-    // Scenario 7: Schema validation failed / Invalid params (类型错误与参数校验失败)
-    // ----------------------------------------------------
+    // Scenario 2: Schema validation failed / Invalid params (类型错误与参数校验失败)
     {
         auto transport = std::make_shared<MockTransport>();
         auto session = std::make_shared<mcp::McpClientSession>(transport);
@@ -64,7 +57,6 @@ void test_error_response() {
         };
         transport->pushServerMessage(schemaErrResp.dump());
 
-        assert(schemaErrorTriggered && "Scenario 7 Failed: Invalid parameter type should return -32602.");
-        std::cout << "  [✓] Scenario 7: Validate schema validation failure and invalid params\n";
+        TM_ASSERT_TRUE(schemaErrorTriggered, "Scenario 2: Invalid parameter type should return -32602.");
     }
 }

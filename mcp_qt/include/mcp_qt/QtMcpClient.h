@@ -1,6 +1,7 @@
 #pragma once
 #include <QObject>
 #include <QList>
+#include <QTimer>
 #include <memory>
 #include "mcp_core/McpClientSession.h"
 #include "mcp_core/McpTool.h"
@@ -46,9 +47,13 @@ public slots:
     void listPrompts();
     void getPrompt(const QString& name, const QString& argumentsJson);
 
+private slots:
+    void onCheckTimeouts();
+
 private:
     std::shared_ptr<McpClientSession> m_session;
     std::shared_ptr<IMcpTransport> m_transport;
+    QTimer* m_timeoutTimer = nullptr;
 };
 
 } // namespace mcp

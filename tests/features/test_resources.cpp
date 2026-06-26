@@ -1,11 +1,7 @@
 #include "tests/common.h"
 
 void test_resources() {
-    std::cout << "[Resources Test] Running resources/list & resources/read scenario tests...\n";
-
-    // ----------------------------------------------------
     // Scenario 1: Paginated listResources Discovery
-    // ----------------------------------------------------
     {
         auto transport = std::make_shared<MockTransport>();
         auto session = std::make_shared<mcp::McpClientSession>(transport);
@@ -41,7 +37,7 @@ void test_resources() {
             }}
         };
         transport->pushServerMessage(page1Resp.dump());
-        assert(page1Success && "Resources Scenario 1 Failed: first page resources listing failed.");
+        TM_ASSERT_TRUE(page1Success, "Scenario 1: first page resources listing failed.");
 
         // Second page listResources (with cursor)
         bool page2Success = false;
@@ -61,13 +57,10 @@ void test_resources() {
             }}
         };
         transport->pushServerMessage(page2Resp.dump());
-        assert(page2Success && "Resources Scenario 1 Failed: second page resources listing failed.");
-        std::cout << "  [✓] Scenario 1: Paginated resource listing and cursor parsing\n";
+        TM_ASSERT_TRUE(page2Success, "Scenario 1: second page resources listing failed.");
     }
 
-    // ----------------------------------------------------
     // Scenario 2: resources/read Permission Denied, Large File, and Binary data with MIME type
-    // ----------------------------------------------------
     {
         auto transport = std::make_shared<MockTransport>();
         auto session = std::make_shared<mcp::McpClientSession>(transport);
@@ -94,7 +87,7 @@ void test_resources() {
             {"error", {{"code", -32000}, {"message", "Permission Denied"}}}
         };
         transport->pushServerMessage(errPermissionResp.dump());
-        assert(permissionDeniedSuccess && "Resources Scenario 2.1 Failed: admin config should return permission denied.");
+        TM_ASSERT_TRUE(permissionDeniedSuccess, "Scenario 2.1: admin config should return permission denied.");
 
         // 2.2: Large file mock check (2MB)
         bool hugeFileSuccess = false;
@@ -118,7 +111,7 @@ void test_resources() {
             }}
         };
         transport->pushServerMessage(hugeFileResp.dump());
-        assert(hugeFileSuccess && "Resources Scenario 2.2 Failed: large resource content parsing failed.");
+        TM_ASSERT_TRUE(hugeFileSuccess, "Scenario 2.2: large resource content parsing failed.");
 
         // 2.3: Binary base64 data and MIME check
         bool binaryFileSuccess = false;
@@ -142,13 +135,10 @@ void test_resources() {
             }}
         };
         transport->pushServerMessage(binaryResp.dump());
-        assert(binaryFileSuccess && "Resources Scenario 2.3 Failed: binary data or MIME mapping failed.");
-        std::cout << "  [✓] Scenario 2: Resource reading boundaries (403 Permission Denied, 2MB Large file, Binary base64 blob with MIME)\n";
+        TM_ASSERT_TRUE(binaryFileSuccess, "Scenario 2.3: binary data or MIME mapping failed.");
     }
 
-    // ----------------------------------------------------
     // Scenario 3: Resource Subscriptions (Subscribe / Unsubscribe)
-    // ----------------------------------------------------
     {
         auto transport = std::make_shared<MockTransport>();
         auto session = std::make_shared<mcp::McpClientSession>(transport);
@@ -171,7 +161,7 @@ void test_resources() {
         });
         mcp::json subResp = {{"jsonrpc", "2.0"}, {"id", 2}, {"result", mcp::json::object()}};
         transport->pushServerMessage(subResp.dump());
-        assert(subscribeSuccess && "Resources Scenario 3.1 Failed: resource subscription failed.");
+        TM_ASSERT_TRUE(subscribeSuccess, "Scenario 3.1: resource subscription failed.");
 
         // 3.2: Unsubscribe from resource
         bool unsubscribeSuccess = false;
@@ -182,7 +172,6 @@ void test_resources() {
         });
         mcp::json unsubResp = {{"jsonrpc", "2.0"}, {"id", 3}, {"result", mcp::json::object()}};
         transport->pushServerMessage(unsubResp.dump());
-        assert(unsubscribeSuccess && "Resources Scenario 3.2 Failed: resource unsubscription failed.");
-        std::cout << "  [✓] Scenario 3: Resource subscription and unsubscription\n";
+        TM_ASSERT_TRUE(unsubscribeSuccess, "Scenario 3.2: resource unsubscription failed.");
     }
 }

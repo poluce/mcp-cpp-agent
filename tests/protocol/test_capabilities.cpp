@@ -1,11 +1,7 @@
 #include "tests/common.h"
 
 void test_capabilities() {
-    std::cout << "[Capabilities Test] Running capability negotiation scenario tests...\n";
-
-    // ----------------------------------------------------
-    // Scenario 4: Server returns unsupported protocolVersion / Mismatch
-    // ----------------------------------------------------
+    // Scenario 1: Server returns unsupported protocolVersion / Mismatch
     {
         auto transport = std::make_shared<MockTransport>();
         auto session = std::make_shared<mcp::McpClientSession>(transport);
@@ -37,9 +33,8 @@ void test_capabilities() {
         };
         transport->pushServerMessage(mockResponse.dump());
 
-        assert(!initSuccess && "Scenario 4 Failed: Handshake should fail on version mismatch.");
-        assert(!initializedNotificationSent && "Scenario 4 Failed: initialized notification must not be sent on mismatch.");
-        assert(session->state() == mcp::SessionState::Uninitialized && "Scenario 4 Failed: state should rollback to Uninitialized.");
-        std::cout << "  [✓] Scenario 4: Unmatched protocolVersion negotiation and rollback\n";
+        TM_ASSERT_FALSE(initSuccess, "Scenario 1: Handshake should fail on version mismatch.");
+        TM_ASSERT_FALSE(initializedNotificationSent, "Scenario 1: initialized notification must not be sent on mismatch.");
+        TM_ASSERT_EQ(session->state(), mcp::SessionState::Uninitialized, "Scenario 1: state should rollback to Uninitialized.");
     }
 }

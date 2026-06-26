@@ -1,28 +1,21 @@
 #include "tests/common.h"
 
 void test_tools() {
-    std::cout << "[Tools Test] Running tools/list & tools/call scenario tests...\n";
-
-    // ----------------------------------------------------
     // Scenario 1: Tool Name Format Validation
-    // ----------------------------------------------------
     {
-        assert(mcp::isValidToolName("calculate_add"));
-        assert(mcp::isValidToolName("get-system-info"));
-        assert(mcp::isValidToolName("test.tool"));
-        assert(mcp::isValidToolName("12345"));
+        TM_ASSERT_TRUE(mcp::isValidToolName("calculate_add"), "Tool Name Validation: calculate_add");
+        TM_ASSERT_TRUE(mcp::isValidToolName("get-system-info"), "Tool Name Validation: get-system-info");
+        TM_ASSERT_TRUE(mcp::isValidToolName("test.tool"), "Tool Name Validation: test.tool");
+        TM_ASSERT_TRUE(mcp::isValidToolName("12345"), "Tool Name Validation: 12345");
         
-        assert(!mcp::isValidToolName("")); // Empty
-        assert(!mcp::isValidToolName("tools list")); // Space
-        assert(!mcp::isValidToolName("calculate*add")); // Asterisk
-        assert(!mcp::isValidToolName("tool/call")); // Slash
-        assert(!mcp::isValidToolName(std::string(129, 'a'))); // Length > 128
-        std::cout << "  [✓] Scenario 1: Tool Name constraints and regex matching\n";
+        TM_ASSERT_FALSE(mcp::isValidToolName(""), "Tool Name Validation: Empty name");
+        TM_ASSERT_FALSE(mcp::isValidToolName("tools list"), "Tool Name Validation: Spaces");
+        TM_ASSERT_FALSE(mcp::isValidToolName("calculate*add"), "Tool Name Validation: Asterisk");
+        TM_ASSERT_FALSE(mcp::isValidToolName("tool/call"), "Tool Name Validation: Slash");
+        TM_ASSERT_FALSE(mcp::isValidToolName(std::string(129, 'a')), "Tool Name Validation: Too long");
     }
 
-    // ----------------------------------------------------
     // Scenario 2: Paginated listTools Discovery
-    // ----------------------------------------------------
     {
         auto transport = std::make_shared<MockTransport>();
         auto session = std::make_shared<mcp::McpClientSession>(transport);
@@ -60,7 +53,7 @@ void test_tools() {
             }}
         };
         transport->pushServerMessage(firstPageResp.dump());
-        assert(page1Success && "Scenario 2 Failed: First page listTools with cursor failed.");
+        TM_ASSERT_TRUE(page1Success, "Scenario 2: First page listTools with cursor failed.");
 
         // Second page listTools (with page1NextCursor)
         bool page2Success = false;
@@ -83,13 +76,10 @@ void test_tools() {
             }}
         };
         transport->pushServerMessage(secondPageResp.dump());
-        assert(page2Success && "Scenario 2 Failed: Second page listTools with cursor failed.");
-        std::cout << "  [✓] Scenario 2: Paginated tool listing and cursor passing\n";
+        TM_ASSERT_TRUE(page2Success, "Scenario 2: Second page listTools with cursor failed.");
     }
 
-    // ----------------------------------------------------
     // Scenario 3: tools/call missing params, tool not found, and isError exception handling
-    // ----------------------------------------------------
     {
         auto transport = std::make_shared<MockTransport>();
         auto session = std::make_shared<mcp::McpClientSession>(transport);
@@ -116,7 +106,7 @@ void test_tools() {
             {"error", {{"code", -32602}, {"message", "Missing required arguments: a or b"}}}
         };
         transport->pushServerMessage(errParamResp.dump());
-        assert(paramErrorSuccess && "Scenario 3.1 Failed: parameter missing should return standard error.");
+        TM_ASSERT_TRUE(paramErrorSuccess, "Scenario 3.1: parameter missing should return standard error.");
 
         // 3.2: Tool not found standard error
         bool toolNotFoundSuccess = false;
@@ -131,7 +121,7 @@ void test_tools() {
             {"error", {{"code", -32601}, {"message", "Tool not found"}}}
         };
         transport->pushServerMessage(errNotFoundResp.dump());
-        assert(toolNotFoundSuccess && "Scenario 3.2 Failed: calling non-existent tool should return -32601.");
+        TM_ASSERT_TRUE(toolNotFoundSuccess, "Scenario 3.2: calling non-existent tool should return -32601.");
 
         // 3.3: Execution isError returns true (Application level error)
         bool execErrorSuccess = false;
@@ -149,52 +139,55 @@ void test_tools() {
             }}
         };
         transport->pushServerMessage(isErrorResp.dump());
-        assert(execErrorSuccess && "Scenario 3.3 Failed: execution failure isError mapping failed.");
-        std::cout << "  [✓] Scenario 3: Standard tools/call exceptions and application-level isError mapping\n";
+        TM_ASSERT_TRUE(execErrorSuccess, "Scenario 3.3: execution failure isError mapping failed.");
     }
 
-    // ----------------------------------------------------
-    // Scenario 4: Synchronous API blocking calls (同步阻塞式 API 校验)
-    // ----------------------------------------------------
+    // Scenario 4: Synchronous API blocking calls (Non-sleep reactive synchronization)
     {
         auto transport = std::make_shared<MockTransport>();
         auto session = std::make_shared<mcp::McpClientSession>(transport);
         session->init();
         session->start();
 
-        std::thread serverThread([&]() {
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            mcp::json initResp = {
-                {"jsonrpc", "2.0"}, {"id", 1},
-                {"result", {{"protocolVersion", mcp::McpClientSession::MCP_PROTOCOL_VERSION}, {"capabilities", mcp::json::object()}, {"serverInfo", mcp::json::object()}}}
-            };
-            transport->pushServerMessage(initResp.dump());
+        // Dynamically respond based on incoming requests to avoid race conditions and sleeps
+        transport->onSendCallback = [&](const std::string& msg) {
+            mcp::json j = mcp::json::parse(msg);
+            if (!j.contains("id") || j["id"].is_null()) {
+                return;
+            }
+            int64_t id = j["id"].get<int64_t>();
+            std::string method = j["method"].get<std::string>();
 
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            mcp::json toolsResp = {
-                {"jsonrpc", "2.0"}, {"id", 2},
-                {"result", {
-                    {"tools", mcp::json::array({
-                        {{"name", "sync_tool"}, {"description", "sync"}, {"inputSchema", mcp::json::object()}}
-                    })}
-                }}
-            };
-            transport->pushServerMessage(toolsResp.dump());
-        });
+            if (method == "initialize") {
+                mcp::json resp = {
+                    {"jsonrpc", "2.0"}, {"id", id},
+                    {"result", {{"protocolVersion", mcp::McpClientSession::MCP_PROTOCOL_VERSION}, {"capabilities", mcp::json::object()}, {"serverInfo", mcp::json::object()}}}
+                };
+                transport->pushServerMessageAsync(resp.dump(), 2);
+            } else if (method == "tools/list") {
+                mcp::json resp = {
+                    {"jsonrpc", "2.0"}, {"id", id},
+                    {"result", {
+                        {"tools", mcp::json::array({
+                            {{"name", "sync_tool"}, {"description", "sync"}, {"inputSchema", mcp::json::object()}}
+                        })}
+                    }}
+                };
+                transport->pushServerMessageAsync(resp.dump(), 2);
+            }
+        };
 
         bool initSuccess = session->initializeSync("sync-client", "1.0.0");
-        assert(initSuccess && "Sync initialize failed.");
+        TM_ASSERT_TRUE(initSuccess, "Scenario 4: Sync initialize failed.");
 
         auto tools = session->listToolsSync();
-        assert(tools.size() == 1 && tools[0].name == "sync_tool" && "Sync listTools failed.");
-
-        serverThread.join();
-        std::cout << "  [✓] Scenario 4: Synchronous API blocking call and response validation\n";
+        TM_ASSERT_EQ(tools.size(), 1, "Scenario 4: Sync listTools failed on tool count.");
+        if (tools.size() == 1) {
+            TM_ASSERT_EQ(tools[0].name, "sync_tool", "Scenario 4: Sync listTools failed on tool name.");
+        }
     }
 
-    // ----------------------------------------------------
-    // Scenario 5: Raw String API & Logging validation (原始字符串接口与日志系统校验)
-    // ----------------------------------------------------
+    // Scenario 5: Raw String API & Logging validation (Non-sleep reactive synchronization)
     {
         auto transport = std::make_shared<MockTransport>();
         auto session = std::make_shared<mcp::McpClientSession>(transport);
@@ -208,35 +201,39 @@ void test_tools() {
             }
         });
 
-        std::thread serverThread([&]() {
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            mcp::json initResp = {
-                {"jsonrpc", "2.0"}, {"id", 1},
-                {"result", {{"protocolVersion", mcp::McpClientSession::MCP_PROTOCOL_VERSION}, {"capabilities", mcp::json::object()}, {"serverInfo", mcp::json::object()}}}
-            };
-            transport->pushServerMessage(initResp.dump());
+        transport->onSendCallback = [&](const std::string& msg) {
+            mcp::json j = mcp::json::parse(msg);
+            if (!j.contains("id") || j["id"].is_null()) {
+                return;
+            }
+            int64_t id = j["id"].get<int64_t>();
+            std::string method = j["method"].get<std::string>();
 
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            mcp::json toolsResp = {
-                {"jsonrpc", "2.0"}, {"id", 2},
-                {"result", {
-                    {"content", mcp::json::array({{{"type", "text"}, {"text", "raw success"}}})}
-                }}
-            };
-            transport->pushServerMessage(toolsResp.dump());
-        });
+            if (method == "initialize") {
+                mcp::json resp = {
+                    {"jsonrpc", "2.0"}, {"id", id},
+                    {"result", {{"protocolVersion", mcp::McpClientSession::MCP_PROTOCOL_VERSION}, {"capabilities", mcp::json::object()}, {"serverInfo", mcp::json::object()}}}
+                };
+                transport->pushServerMessageAsync(resp.dump(), 2);
+            } else if (method == "tools/call") {
+                mcp::json resp = {
+                    {"jsonrpc", "2.0"}, {"id", id},
+                    {"result", {
+                        {"content", mcp::json::array({{{"type", "text"}, {"text", "raw success"}}})}
+                    }}
+                };
+                transport->pushServerMessageAsync(resp.dump(), 2);
+            }
+        };
 
         bool initSuccess = session->initializeSync("raw-client", "1.0.0");
-        assert(initSuccess);
+        TM_ASSERT_TRUE(initSuccess, "Scenario 5: Initialize Sync should succeed.");
 
         std::string errOut;
         std::string result = session->callToolSyncRaw("calculate_add", "{\"a\":10,\"b\":20}", &errOut);
         
-        assert(errOut.find("code") == std::string::npos && "Raw tool call returned error.");
-        assert(result.find("raw success") != std::string::npos && "Raw tool call returned wrong response.");
-        assert(logReceived && "LogCallback was not triggered on sendRequest.");
-
-        serverThread.join();
-        std::cout << "  [✓] Scenario 5: Raw String API uncoupled call and LogCallback trace validation\n";
+        TM_ASSERT_TRUE(errOut.empty(), "Scenario 5: Raw tool call should return empty error string.");
+        TM_ASSERT_STR_CONTAINS(result, "raw success", "Scenario 5: Raw tool call should return correct response.");
+        TM_ASSERT_TRUE(logReceived, "Scenario 5: LogCallback should be triggered on sendRequest.");
     }
 }

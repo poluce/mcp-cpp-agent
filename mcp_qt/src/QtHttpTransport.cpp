@@ -29,10 +29,20 @@ bool QtHttpTransport::send(const std::string& message) {
     if (!m_postUrl.isValid()) {
         return false;
     }
+
+    // Extract MCP-Session-Id from SSE reply headers (arrives on first readyRead)
+    if (m_sessionId.isEmpty() && m_sseReply) {
+        m_sessionId = QString::fromUtf8(m_sseReply->rawHeader("MCP-Session-Id"));
+    }
+
     QNetworkRequest request(m_postUrl);
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
     request.setRawHeader("MCP-Protocol-Version", "2025-11-25");
-    
+    request.setRawHeader("Accept", "application/json, text/event-stream");
+    if (!m_sessionId.isEmpty()) {
+        request.setRawHeader("MCP-Session-Id", m_sessionId.toUtf8());
+    }
+
     QByteArray postData = QByteArray::fromStdString(message);
     m_nam->post(request, postData);
     return true;

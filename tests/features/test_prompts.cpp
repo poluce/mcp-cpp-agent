@@ -1,11 +1,7 @@
 #include "tests/common.h"
 
 void test_prompts() {
-    std::cout << "[Prompts Test] Running prompts/list & prompts/get scenario tests...\n";
-
-    // ----------------------------------------------------
-    // Scenario 4: Prompts listing, get, missing argument, and type validation
-    // ----------------------------------------------------
+    // Scenario 1: Prompts listing, get, missing argument, and type validation
     {
         auto transport = std::make_shared<MockTransport>();
         auto session = std::make_shared<mcp::McpClientSession>(transport);
@@ -19,7 +15,7 @@ void test_prompts() {
         };
         transport->pushServerMessage(initResp.dump());
 
-        // 4.1: Paginated prompt listing
+        // 1.1: Paginated prompt listing
         bool promptListSuccess = false;
         std::string promptNextCursor;
         session->listPrompts("", [&](const mcp::json& result, const std::string& nextCursor, const mcp::json& error) {
@@ -37,9 +33,9 @@ void test_prompts() {
             }}
         };
         transport->pushServerMessage(pList1Resp.dump());
-        assert(promptListSuccess && "Prompts Scenario 4.1 Failed: prompt list first page failed.");
+        TM_ASSERT_TRUE(promptListSuccess, "Scenario 1.1: prompt list first page failed.");
 
-        // 4.2: prompts/get Missing argument error
+        // 1.2: prompts/get Missing argument error
         bool argMissingSuccess = false;
         session->getPrompt("code_review", mcp::json::object(), [&](const mcp::json&, const mcp::json& error) {
             if (!error.empty() && error.contains("code") && error["code"] == -32602) {
@@ -52,9 +48,9 @@ void test_prompts() {
             {"error", {{"code", -32602}, {"message", "Missing required argument: code"}}}
         };
         transport->pushServerMessage(errMissingResp.dump());
-        assert(argMissingSuccess && "Prompts Scenario 4.2 Failed: missing argument should return -32602.");
+        TM_ASSERT_TRUE(argMissingSuccess, "Scenario 1.2: missing argument should return -32602.");
 
-        // 4.3: prompts/get Argument type mismatch error
+        // 1.3: prompts/get Argument type mismatch error
         bool typeMismatchSuccess = false;
         session->getPrompt("code_review", {{"code", 12345}}, [&](const mcp::json&, const mcp::json& error) {
             if (!error.empty() && error.contains("code") && error["code"] == -32602) {
@@ -67,13 +63,10 @@ void test_prompts() {
             {"error", {{"code", -32602}, {"message", "Argument must be string"}}}
         };
         transport->pushServerMessage(errTypeResp.dump());
-        assert(typeMismatchSuccess && "Prompts Scenario 4.3 Failed: type mismatch should return -32602.");
-        std::cout << "  [✓] Scenario 4: Prompt list discovery, missing parameters, and argument type checks\n";
+        TM_ASSERT_TRUE(typeMismatchSuccess, "Scenario 1.3: type mismatch should return -32602.");
     }
 
-    // ----------------------------------------------------
-    // Scenario 5: Rich prompt contents (text, image, embedded resource)
-    // ----------------------------------------------------
+    // Scenario 2: Rich prompt contents (text, image, embedded resource)
     {
         auto transport = std::make_shared<MockTransport>();
         auto session = std::make_shared<mcp::McpClientSession>(transport);
@@ -87,7 +80,7 @@ void test_prompts() {
         };
         transport->pushServerMessage(initResp.dump());
 
-        // 5.1: Multi-media prompt result (text, image, resource contents)
+        // 2.1: Multi-media prompt result (text, image, resource contents)
         bool richPromptSuccess = false;
         session->getPrompt("rich_prompt", mcp::json::object(), [&](const mcp::json& result, const mcp::json& error) {
             if (error.empty() && result.contains("messages")) {
@@ -117,7 +110,6 @@ void test_prompts() {
             }}
         };
         transport->pushServerMessage(richPromptResp.dump());
-        assert(richPromptSuccess && "Prompts Scenario 5.1 Failed: rich media prompt content parsing failed.");
-        std::cout << "  [✓] Scenario 5: Prompt content formats (text, image, embedded resources)\n";
+        TM_ASSERT_TRUE(richPromptSuccess, "Scenario 2.1: rich media prompt content parsing failed.");
     }
 }

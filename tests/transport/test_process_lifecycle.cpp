@@ -1,11 +1,7 @@
 #include "tests/common.h"
 
 void test_process_lifecycle() {
-    std::cout << "[Process Lifecycle Test] Running session connection crash & interruption tests...\n";
-
-    // ----------------------------------------------------
-    // Scenario 6: Server crash / Connection Interrupted (连接中断清理)
-    // ----------------------------------------------------
+    // Scenario 1: Server crash / Connection Interrupted (连接中断清理)
     {
         auto transport = std::make_shared<MockTransport>();
         auto session = std::make_shared<mcp::McpClientSession>(transport);
@@ -31,7 +27,6 @@ void test_process_lifecycle() {
         // 模拟 Transport 断开 / Server 崩溃
         transport->close();
 
-        assert(connectionErrorTriggered && "Scenario 6 Failed: Connection interruption should trigger callback cleanup.");
-        std::cout << "  [✓] Scenario 6: Cleanup pending requests on server crash or connection interruption\n";
+        TM_ASSERT_TRUE(connectionErrorTriggered, "Scenario 1: Connection interruption should trigger callback cleanup.");
     }
 }

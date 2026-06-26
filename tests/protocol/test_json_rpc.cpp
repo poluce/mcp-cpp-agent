@@ -1,37 +1,33 @@
 #include "tests/common.h"
 
 void test_json_rpc() {
-    std::cout << "[JSON-RPC Test] Running JSON-RPC parsing & ID safety scenario tests...\n";
-
-    // ----------------------------------------------------
     // Scenario 1: JSON Parsing error (Robustness check)
-    // ----------------------------------------------------
     {
         auto transport = std::make_shared<MockTransport>();
         auto session = std::make_shared<mcp::McpClientSession>(transport);
         session->init();
         session->start();
 
+        bool crashed = false;
         try {
             transport->pushServerMessage("{invalid json: error");
             transport->pushServerMessage("");
             transport->pushServerMessage("   ");
             transport->pushServerMessage("[]");
         } catch (...) {
-            assert(false && "Scenario 1 Failed: Incoming malformed JSON or empty message crashed the client.");
+            crashed = true;
         }
-        std::cout << "  [✓] Scenario 1: Malformed JSON packet parsing defensiveness\n";
+        TM_ASSERT_FALSE(crashed, "Scenario 1: Incoming malformed JSON or empty message crashed the client.");
     }
 
-    // ----------------------------------------------------
-    // Scenario 3: Unknown / Mismatched Response ID (Fault isolation)
-    // ----------------------------------------------------
+    // Scenario 2: Unknown / Mismatched Response ID (Fault isolation)
     {
         auto transport = std::make_shared<MockTransport>();
         auto session = std::make_shared<mcp::McpClientSession>(transport);
         session->init();
         session->start();
 
+        bool crashed = false;
         try {
             mcp::json unknownResp = {
                 {"jsonrpc", "2.0"},
@@ -47,8 +43,8 @@ void test_json_rpc() {
             };
             transport->pushServerMessage(invalidIdResp.dump());
         } catch (...) {
-            assert(false && "Scenario 3 Failed: Client crashed on unknown or malformed response id.");
+            crashed = true;
         }
-        std::cout << "  [✓] Scenario 3: Ignore unknown or type-mismatched response IDs (Crash prevention)\n";
+        TM_ASSERT_FALSE(crashed, "Scenario 2: Client crashed on unknown or malformed response id.");
     }
 }

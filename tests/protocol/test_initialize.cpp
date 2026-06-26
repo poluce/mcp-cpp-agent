@@ -1,11 +1,7 @@
 #include "tests/common.h"
 
 void test_initialize() {
-    std::cout << "[Initialize Test] Running initialize scenario tests...\n";
-
-    // ----------------------------------------------------
     // Scenario 1: tools/list before initialize (Should be intercepted)
-    // ----------------------------------------------------
     {
         auto transport = std::make_shared<MockTransport>();
         auto session = std::make_shared<mcp::McpClientSession>(transport);
@@ -19,14 +15,11 @@ void test_initialize() {
             }
         });
 
-        assert(interceptCorrect && "Scenario 1 Failed: Sending tools/list before initialization should be intercepted locally.");
-        assert(transport->lastSentMessage.empty() && "Scenario 1 Failed: Stdio packet should not be sent out on interception.");
-        std::cout << "  [✓] Scenario 1: Intercept business request before initialization\n";
+        TM_ASSERT_TRUE(interceptCorrect, "Scenario 1: Sending tools/list before initialization should be intercepted locally.");
+        TM_ASSERT_TRUE(transport->lastSentMessage.empty(), "Scenario 1: Stdio packet should not be sent out on interception.");
     }
 
-    // ----------------------------------------------------
     // Scenario 2: Normal initialize
-    // ----------------------------------------------------
     {
         auto transport = std::make_shared<MockTransport>();
         auto session = std::make_shared<mcp::McpClientSession>(transport);
@@ -57,15 +50,12 @@ void test_initialize() {
         };
         transport->pushServerMessage(mockResponse.dump());
 
-        assert(initSuccess && "Scenario 2 Failed: Normal initialize handshake failed.");
-        assert(initializedNotificationSent && "Scenario 2 Failed: initialized notification was not sent.");
-        assert(session->state() == mcp::SessionState::Initialized && "Scenario 2 Failed: state was not updated to Initialized.");
-        std::cout << "  [✓] Scenario 2: Normal initialize handshake and notification\n";
+        TM_ASSERT_TRUE(initSuccess, "Scenario 2: Normal initialize handshake failed.");
+        TM_ASSERT_TRUE(initializedNotificationSent, "Scenario 2: initialized notification was not sent.");
+        TM_ASSERT_EQ(session->state(), mcp::SessionState::Initialized, "Scenario 2: state was not updated to Initialized.");
     }
 
-    // ----------------------------------------------------
     // Scenario 3: Duplicate initialize (Should be blocked)
-    // ----------------------------------------------------
     {
         auto transport = std::make_shared<MockTransport>();
         auto session = std::make_shared<mcp::McpClientSession>(transport);
@@ -81,7 +71,6 @@ void test_initialize() {
             }
         });
 
-        assert(repeatIntercept && "Scenario 3 Failed: Duplicate initialization calls should be intercepted.");
-        std::cout << "  [✓] Scenario 3: Prevent duplicate initialize calls\n";
+        TM_ASSERT_TRUE(repeatIntercept, "Scenario 3: Duplicate initialization calls should be intercepted.");
     }
 }

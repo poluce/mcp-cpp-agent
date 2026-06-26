@@ -25,4 +25,6 @@ target_include_directories(mcp_client_conformance PRIVATE
 
 target_link_libraries(mcp_client_conformance PRIVATE
     mcp_core
+    Qt6::Core
+    Qt6::Network
 )
