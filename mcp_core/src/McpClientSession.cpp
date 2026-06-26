@@ -9,6 +9,13 @@ McpClientSession::~McpClientSession() {
     close();
 }
 
+std::shared_ptr<McpClientSession> McpClientSession::connect(std::shared_ptr<IMcpTransport> transport) {
+    auto session = std::make_shared<McpClientSession>(std::move(transport));
+    session->init();
+    session->start();
+    return session;
+}
+
 void McpClientSession::init() {
     std::weak_ptr<McpClientSession> weakSelf = shared_from_this();
     m_transport->setOnMessage([weakSelf](const std::string& msg) {

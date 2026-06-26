@@ -35,9 +35,8 @@ int main() {
     auto transport = std::make_shared<mcp::SubprocessStdioTransport>(
         "node", {"/path/to/mcp-server.js"});
 
-    auto session = std::make_shared<mcp::McpClientSession>(transport);
-    session->init();
-    session->start();
+    // connect() = 构造 + init() + start() 一步完成
+    auto session = mcp::McpClientSession::connect(transport);
 
     // 同步阻塞 API：初始化握手
     bool ok = session->initializeSync("my-app", "1.0.0");
@@ -132,8 +131,12 @@ public:
 ## 构建方法
 
 ```bash
-# 构建项目与测试
+# 构建项目与测试（默认开启 HTTP/SSE 传输，需要编译 libcurl 约 8 分钟）
 cmake -B build
+cmake --build build
+
+# 纯 Stdio 模式（跳过 HTTP 依赖，编译仅需 10 秒）
+cmake -B build -DMCP_ENABLE_HTTP=OFF
 cmake --build build
 ```
 

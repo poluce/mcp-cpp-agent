@@ -287,11 +287,6 @@ void HttpSseTransport::sseReadLoop() {
         int responseCode = 0;
 
         try {
-            httplib::Client client(host, port);
-            client.set_connection_timeout(10, 0);
-            // 设 1 秒读超时：服务端关闭 SSE 流后能及时检测到（原生 recv 超时）
-            client.set_read_timeout(1, 0);
-
             httplib::Headers headers;
             headers.emplace("Accept", "text/event-stream");
             headers.emplace("Cache-Control", "no-cache");
@@ -305,9 +300,7 @@ void HttpSseTransport::sseReadLoop() {
                 headers.emplace("Authorization", "Bearer " + token);
             }
 
-            if (m_onError) m_onError("SSE connecting to: " + m_sseUrl);
-
-            // 使用流式接收：httplib 在 recv() 返回 0（连接关闭）时自然结束
+            // 流式接收回调
             httplib::ResponseHandler respHandler =
                 [&](const httplib::Response& resp) {
                     responseCode = resp.status;
@@ -329,7 +322,27 @@ void HttpSseTransport::sseReadLoop() {
                     onSseData(data, data_length);
                     return m_running.load();
                 };
-            auto res = client.Get(path.c_str(), headers, respHandler, contentReceiver);
+
+            if (m_onError) m_onError("SSE connecting to: " + m_sseUrl);
+            httplib::Result res;
+
+            // 根据 scheme 选择 HTTP 或 HTTPS 客户端
+            if (scheme == "https") {
+#if defined(CPPHTTPLIB_OPENSSL_SUPPORT)
+                httplib::SSLClient sslClient(host, port);
+                sslClient.set_connection_timeout(10, 0);
+                sslClient.set_read_timeout(1, 0);
+                sslClient.enable_server_certificate_verification(false);
+                res = sslClient.Get(path.c_str(), headers, respHandler, contentReceiver);
+#else
+                std::cerr << "[SDK httplib] HTTPS requires CPPHTTPLIB_OPENSSL_SUPPORT" << std::endl;
+#endif
+            } else {
+                httplib::Client plainClient(host, port);
+                plainClient.set_connection_timeout(10, 0);
+                plainClient.set_read_timeout(1, 0);
+                res = plainClient.Get(path.c_str(), headers, respHandler, contentReceiver);
+            }
 
             if (!res) {
                 auto err = res.error();

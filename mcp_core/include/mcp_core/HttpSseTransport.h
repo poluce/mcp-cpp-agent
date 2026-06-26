@@ -1,4 +1,9 @@
 #pragma once
+
+#ifndef MCP_ENABLE_HTTP
+#error "HttpSseTransport requires MCP_ENABLE_HTTP=ON. Reconfigure with -DMCP_ENABLE_HTTP=ON or use Stdio transport instead."
+#endif
+
 #include <string>
 #include <functional>
 #include <thread>

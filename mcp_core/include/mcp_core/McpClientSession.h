@@ -84,6 +84,18 @@ public:
     ~McpClientSession();
 
     /**
+     * @brief Factory: create session, init handlers, and start transport in one call.
+     *
+     * Equivalent to:
+     *   auto session = std::make_shared<McpClientSession>(transport);
+     *   session->init();
+     *   session->start();
+     *
+     * After connect(), call initializeSync() to complete the handshake.
+     */
+    static std::shared_ptr<McpClientSession> connect(std::shared_ptr<IMcpTransport> transport);
+
+    /**
      * @brief Bind handlers to the transport. Must be called after creation.
      */
     void init();

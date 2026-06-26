@@ -1,0 +1,64 @@
+[Conformance] HTTP mode, scenario: sse-retry, url: http://localhost:52738
+[Transport Error] SSE connecting to: http://localhost:52738
+[SDK SSE Raw] Received data chunk (len=31): id: event-1
+retry: 500
+data: 
+
+
+[SDK] JSON parsing failed on incoming message:  
+[SDK httplib] GET error: Failed to read connection
+[Transport Error] SSE disconnected (code=200). Reconnecting in 500ms...
+[SDK SSE] Reconnect de[Conformance] Initialize OK
+[Conformance] scenario initialize PASSED
+K] JSON par[Conformance] scenario tools_call PA[Transport Error] SSE connecting to: http://localhost:52738
+[SDK SSE Raw] Received data chunk (len=31): id: event-3
+retry: 500
+data: 
+
+
+[SDK] JSON parsing failed on incoming message:  
+[SDK SSE Raw] Received data chunk (len=148): event: message
+id: event-4
+data: {"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"Reconnection test completed successfully"}]}}
+
+
+[Conformance] scenario sse-retry PASSED
+ription":"User score","default":95.5},"status":{"type":"string","description":"User status","enum":["active","inactive","pending"],"default":"active"},"verified":{"type":"boolean","description":"Verification status","default":true}},"required":[]}},"jsonrpc":"2.0","id":0}
+
+
+[Conformance] Elicitation invoked: {"message":"Test client default value handling - please accept with defaults","requestedSchema":{"properties":{"age":{"default":30,"description":"User age","type":"integer"},"name":{"default":"John Doe","description":"User name","type":"string"},"score":{"default":95.5,"description":"User score","type":"number"},"status":{"default":"active","description":"User status","enum":["active","inactive","pending"],"type":"string"},"verified":{"default":true,"description":"Verification status","type":"boolean"}},"required":[],"type":"object"}}
+[Conformance] scenario elicitation-sep1034-client-defaults PASSED
+authorization-server
+[SDK Auth Debug] Metadata Discovery Success. TokenEndpoint=http://localhost:52750/token, RegistrationEndpoint=http://localhost:52750/register
+[SDK Auth Debug] Current Conformance Scenario=auth/token-endpoint-auth-post, Context={}
+[SDK Auth Debug] Performing Dynamic Client Registration...
+[Transport Error] [SDK Auth] Performing Dynamic Client Registration...
+[SDK OAuth Debug] registerClient: endpoint=http://localhost:52750/register, request={"client_name":"conformance-client-cpp","grant_types":["authorization_code","refresh_token"],"redirect_uris":["http://localhost:3000/callback"],"response_types":["code"],"token_endpoint_auth_method":"none"}
+[SDK OAuth Debug] registerClient response={"client_id":"test-client-1782462261201","client_secret":"test-secret-1782462261201","client_name":"conformance-client-cpp","redirect_uris":["http://localhost:3000/callback"],"token_endpoint_auth_method":"client_secret_post"}
+[SDK Auth Debug] DCR Success. clientId=test-client-1782462261201, clientSecret=test-secret-1782462261201
+[Transport Error] [SDK Auth] DCR Success. clientId: test-client-1782462261201
+[SDK Auth Debug] No scope available, omitting scope parameter
+[SDK Auth Debug] Building[SDK Auth Debug] Auth URL: http://localhost:52751/authorize?response_type=code&clie[SDK Auth Debug] Auth URL: http://localhost:52750/authorize?response_type=code&client_id=test-client-1782462261201&state=cf2acdd22bed823de71ad5fc8fa0fd7c&code_challenge=4dn_LFmiFyfbsHs-Ein-RxppGT-_rCF7GisUoxZY92k&code_challenge_method=S256&redirect_uri=http%3A%2F%2Flocalhost%3A3000%2Fcallback&resource=http%3A%2F%2Flocalhost%3A52765%2Fmcp
+[Transport Error] [SDK Auth] Auth URL: http://localhost:52750/authorize?response_type=code&client_id=test-client-1782462261201&state=cf2acdd22bed823de71ad5fc8fa0fd7c&code_challenge=4dn_LFmiFyfbsHs-Ein-RxppGT-_rCF7GisUoxZY92k&code_challenge_method=S256&redirect_uri=http%3A%2F%2Flocalhost%3A3000%2Fcallback&resource=http%3A%2F%2Flocalhost%3A52765%2Fmcp
+[SDK Auth Debug] Requesting Auth URL to get code...
+[Transport Error] [SDK Auth] Requesting Auth URL to get code...
+[SDK Auth Debug] getAuthCodeFromRedirect: requesting authUrl=http://localhost:52750/authorize?response_type=code&client_id=test-client-1782462261201&state=cf2acdd22bed823de71ad5fc8fa0fd7c&code_challenge=4dn_LFmiFyfbsHs-Ein-RxppGT-_rCF7GisUoxZY92k&code_challenge_method=S256&redirect_uri=http%[SDK Auth Debug] getAuthCodeFromRedirect: curl_easy_perform result=0, location=http[SDK Auth Debug] getAuthCodeFromRedirect: curl_easy_perfo[SDK OAuth Debug] exchangeCode response={"access_token":"test-token-prereg-1782462261225","token_type":"Bearer","expires_in":3600}
+[Transport Error] [SDK Auth] Token Exchange Success!
+[Conformance] Initialize OK
+[Conformance] unknown scenario: auth/pre-registration
+[Conformance] scenario auth/pre-registration PASSED
+hangeCodeSync... TokenEndpoint=http://localhost:52750/token, clie[Conformance] scenario auth/basic-cimd PASSED
+uth Debug] exchangeCode: tokenEndpoint=http://localhost:52750/token, body=client_id=test-client-1782462261201&client_secret=test-secret-1782462261201&code=test-auth-code&code_verifier=5~OO-QKtPqSCyNhjQSDmDfU2B-9-1KY4atAjhyzGVHS6AhPzI.vxzz-ZYunKEBdl&grant_type=autho[SDK OAuth Debug] exchangeCode response={"access_token":"test-token-1782462261230","token_type":"Bearer","expires_in":3600}[SDK OAuth Debug] exchangeCode response={"access_token":[Conformance] Initialize OK
+[Co[Conformance] scenario auth/met[Conf[Conformance] scenario a[Conformance] scenario auth/token-endpoint-auth-none PASSED
+ce] scenario auth/token-endpoint-auth-basic PASSED
+uth-post
+[Conformance] scenario auth/token-endpoint-auth-post PASSED
+nario auth/scope-from-scopes-supported PASSED
+ocalhost%3A3000%2Fcallback&resource=http%3A[Conformance] Initialize OK
+[Conformance] unknown scenario: auth/metadata-var3
+[Conformance] scenario auth/metadata-var3 PASSED
+pe":"Bearer","expires_in":3600}
+[Transport Error] [SDK Auth] Token Exchange Success!
+[Conformance] Initialize OK
+[Conformance] unknown scenario: auth/metadata-var2
+[Conformance] scenario auth/metadata-var2 PASSED

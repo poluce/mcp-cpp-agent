@@ -1,3 +1,7 @@
+if(NOT MCP_ENABLE_HTTP)
+    message(FATAL_ERROR "conformance_runner requires MCP_ENABLE_HTTP=ON")
+endif()
+
 add_executable(mcp_client_conformance
     main.cpp
 )
