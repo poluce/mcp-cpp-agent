@@ -62,4 +62,9 @@ add_subdirectory(tests)
 # 官方一致性测试客户端（纯 C++17，不需要 Qt）
 add_subdirectory(conformance_runner)
 
+option(MCP_ENABLE_QT_TRANSPORT "Build Qt-based HTTP/SSE transport for Qt agents" OFF)
 
+if(MCP_ENABLE_QT_TRANSPORT)
+    find_package(Qt6 REQUIRED COMPONENTS Core Network)
+    add_subdirectory(mcp_qt_transport)
+endif()

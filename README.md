@@ -166,3 +166,48 @@ mcp-cpp-agent/
 ## 依赖
 
 - **SDK 核心**：C++17 编译器 + nlohmann/json（自动 FetchContent） + libcurl（自动 FetchContent）
+
+---
+
+## 传输层选择建议
+
+- **本地 MCP 服务子进程**：推荐使用 `mcp::SubprocessStdioTransport`（效率最高，零网络开销）。
+- **Qt 应用程序中的远程 HTTP/HTTPS 服务**：强烈推荐使用 `mcp_qt::QtHttpSseTransport`（基于 Qt6 事件驱动，性能与多线程退出非常健壮）。
+- **非 Qt 环境的远程 HTTP/HTTPS 连接**：可以使用遗留的 `mcp::HttpSseTransport`，该实现为实验性质，提供基本连接能力。
+
+### Qt 传输层使用示例
+
+若需要在 Qt 客户端中连接远程 MCP 服务：
+```cpp
+#include <mcp_core/McpClientSession.h>
+#include <mcp_qt_transport/QtHttpSseTransport.h>
+#include <QCoreApplication>
+#include <QDebug>
+
+int main(int argc, char *argv[]) {
+    QCoreApplication app(argc, argv);
+
+    // 创建 Qt 专属的 HTTP/SSE 传输层并托管在智能指针中
+    auto transport = std::make_shared<mcp_qt::QtHttpSseTransport>("https://server.example.com/mcp");
+    
+    // 由 MCP 核心 Session 接管该传输层
+    auto session = mcp::McpClientSession::connect(transport);
+    
+    // 异步调用 initialize
+    session->initialize("qt-agent", "1.0.0", [](bool success, const mcp::json& serverInfo) {
+        if (success) {
+            qDebug() << "连接到远程 MCP 成功！";
+        }
+    });
+
+    return app.exec();
+}
+```
+
+### 启用 Qt 传输层编译
+
+在配置 CMake 时，传入 `-DMCP_ENABLE_QT_TRANSPORT=ON` 开关即可同时编出 `mcp_qt_transport` 静态库与 Qt 测试程序：
+```bash
+cmake -B build -G "MinGW Makefiles" -DMCP_ENABLE_QT_TRANSPORT=ON
+cmake --build build
+```

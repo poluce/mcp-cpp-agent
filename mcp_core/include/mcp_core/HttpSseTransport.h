@@ -17,23 +17,18 @@ namespace mcp {
 class McpOAuthClient;
 
 /**
- * @brief Pure C++ HTTP/SSE transport for MCP (Streamable HTTP).
+ * @brief Legacy pure C++ HTTP/SSE transport for MCP (experimental on Windows HTTPS/SSE).
  *
+ * Preferred usage:
+ * - local MCP servers: SubprocessStdioTransport
+ * - remote MCP servers inside Qt agents: mcp_qt::QtHttpSseTransport
+ *
+ * This transport remains available for compatibility, but is not the preferred
+ * remote transport for Qt-based agents.
+ * 
  * Uses libcurl for HTTP communication with built-in platform SSL support.
  * Establishes an SSE (Server-Sent Events) connection for receiving server messages,
  * and sends client messages via HTTP POST.
- *
- * Implements the MCP Streamable HTTP transport specification:
- * - GET SSE endpoint for receiving notifications and responses
- * - POST message endpoint for sending requests and notifications
- * - Dynamic endpoint discovery via SSE "endpoint" events
- * - MCP-Session-Id tracking
- * - Automatic reconnection on SSE disconnect
- *
- * SSL support is automatic via libcurl:
- * - Windows: SChannel (system built-in, zero dependencies)
- * - Linux: OpenSSL (usually pre-installed)
- * - macOS: Secure Transport (system built-in)
  */
 class HttpSseTransport : public IMcpTransport {
 public:
