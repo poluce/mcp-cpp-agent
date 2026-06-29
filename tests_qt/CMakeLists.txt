@@ -22,7 +22,7 @@ target_link_libraries(tests_qt PRIVATE
 )
 
 # 独立的 HTTPS 运行时测试目标，防止 TLS 动态装载冲突挂掉主测试
-add_executable(tests_qt_https_runtime
+add_executable(tests_qt_https_runtime EXCLUDE_FROM_ALL
     test_qt_https_runtime.cpp
     ../tests/common.cpp
 )

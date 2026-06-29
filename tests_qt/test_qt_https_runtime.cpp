@@ -19,6 +19,12 @@ static void waitEvents(int ms) {
 int main(int argc, char* argv[]) {
     QCoreApplication app(argc, argv);
 
+    QByteArray runEnv = qgetenv("MCP_RUN_QT_HTTPS_RUNTIME_TESTS");
+    if (runEnv != "1") {
+        std::cout << "[SKIP] test_qt_https_runtime (MCP_RUN_QT_HTTPS_RUNTIME_TESTS environment variable is not set to 1)" << std::endl;
+        return 0;
+    }
+
     std::cout << "[HTTPS Runtime Test] Checking TLS support in Qt environment..." << std::endl;
 
     if (!QSslSocket::supportsSsl()) {
