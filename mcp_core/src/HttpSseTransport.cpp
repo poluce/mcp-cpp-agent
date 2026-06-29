@@ -210,6 +210,7 @@ void HttpSseTransport::onSseData(const char* data, size_t len) {
                         int ms = std::stoi(retryVal);
                         if (ms > 0) {
                             m_sseRetryMs = ms;
+                            std::cerr << "[SDK SSE] Parsed retry field: " << ms << "ms" << std::endl;
                         }
                     } catch (...) {
                     }
@@ -331,7 +332,7 @@ void HttpSseTransport::sseReadLoop() {
 #if defined(CPPHTTPLIB_OPENSSL_SUPPORT)
                 httplib::SSLClient sslClient(host, port);
                 sslClient.set_connection_timeout(10, 0);
-                sslClient.set_read_timeout(1, 0);
+                sslClient.set_read_timeout(0, 200000);
                 sslClient.enable_server_certificate_verification(false);
                 res = sslClient.Get(path.c_str(), headers, respHandler, contentReceiver);
 #else
@@ -340,7 +341,7 @@ void HttpSseTransport::sseReadLoop() {
             } else {
                 httplib::Client plainClient(host, port);
                 plainClient.set_connection_timeout(10, 0);
-                plainClient.set_read_timeout(1, 0);
+                plainClient.set_read_timeout(0, 200000);
                 res = plainClient.Get(path.c_str(), headers, respHandler, contentReceiver);
             }
 

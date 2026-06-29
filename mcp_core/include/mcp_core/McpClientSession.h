@@ -358,6 +358,13 @@ public:
 
     void setLogCallback(LogCallback callback);
 
+    /**
+     * @brief Override the default protocol version for the next initialize call.
+     *        When set, this value is used as the protocolVersion in the initialize request
+     *        instead of MCP_PROTOCOL_VERSION. Pass an empty string to reset to default.
+     */
+    void setProtocolVersion(const std::string& version);
+
     void registerCapabilities(const json& capabilities);
     std::string getNegotiatedProtocolVersion() const;
     json getServerCapabilities() const;
@@ -407,6 +414,7 @@ private:
         {"elicitation", {{"modes", {"form", "url"}}}}
     };
     std::string m_negotiatedProtocolVersion;
+    std::string m_overrideProtocolVersion;
     json m_serverCapabilities;
     json m_serverVersion;
     std::string m_instructions;

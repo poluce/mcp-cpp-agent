@@ -17,12 +17,14 @@ int main(int argc, char* argv[]) {
 
     const std::string scenario = getEnv("MCP_CONFORMANCE_SCENARIO", "");
     const std::string context  = getEnv("MCP_CONFORMANCE_CONTEXT", "{}");
+    const std::string protocolVersion = getEnv("MCP_CONFORMANCE_PROTOCOL_VERSION", "");
 
     mcp_conformance::RunnerConfig config;
     if (!mcp_conformance::parseRunnerConfig(argc, argv, scenario, context, &config)) {
         std::cerr << mcp_conformance::usageText() << std::endl;
         return 1;
     }
+    config.protocolVersion = protocolVersion;
 
     return mcp_conformance::runScenario(config);
 }

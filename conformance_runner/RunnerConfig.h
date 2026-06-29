@@ -9,6 +9,7 @@ struct RunnerConfig {
     std::string serverUrl;
     std::string scenario;
     nlohmann::json context{nlohmann::json::object()};
+    std::string protocolVersion;
     bool httpMode{false};
 };
 

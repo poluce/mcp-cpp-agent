@@ -8,6 +8,9 @@ namespace mcp_conformance {
 static std::shared_ptr<mcp::McpClientSession> makeAuthSession(const RunnerConfig& config) {
     auto transport = std::make_shared<mcp::HttpSseTransport>(config.serverUrl);
     auto session = std::make_shared<mcp::McpClientSession>(transport);
+    if (!config.protocolVersion.empty()) {
+        session->setProtocolVersion(config.protocolVersion);
+    }
     session->init();
     if (!session->start()) return nullptr;
     return session;

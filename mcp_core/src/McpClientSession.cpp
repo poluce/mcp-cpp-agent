@@ -279,7 +279,7 @@ void McpClientSession::initialize(const std::string& clientName, const std::stri
     }
 
     json params = {
-        {"protocolVersion", MCP_PROTOCOL_VERSION},
+        {"protocolVersion", m_overrideProtocolVersion.empty() ? MCP_PROTOCOL_VERSION : m_overrideProtocolVersion},
         {"capabilities", m_capabilities},
         {"clientInfo", {
             {"name", clientName},
@@ -1250,6 +1250,11 @@ void McpClientSession::sendNotificationDebounced(const std::string& method, cons
 void McpClientSession::setLogCallback(LogCallback callback) {
     std::lock_guard<std::mutex> lock(m_mutex);
     m_logCallback = std::move(callback);
+}
+
+void McpClientSession::setProtocolVersion(const std::string& version) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_overrideProtocolVersion = version;
 }
 
 void McpClientSession::log(LogLevel level, const std::string& message) {
