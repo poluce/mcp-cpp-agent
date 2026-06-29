@@ -34,3 +34,5 @@ target_link_libraries(mcp_core_tests PRIVATE
     mcp_core
     nlohmann_json::nlohmann_json
 )
+
+add_subdirectory(conformance)

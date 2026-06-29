@@ -4,6 +4,12 @@ endif()
 
 add_executable(mcp_client_conformance
     main.cpp
+    RunnerConfig.cpp
+    ScenarioContext.cpp
+    ScenarioRegistry.cpp
+    ScenarioHandlersBasic.cpp
+    ScenarioHandlersAuth.cpp
+    ScenarioHandlersList.cpp
 )
 
 target_include_directories(mcp_client_conformance PRIVATE
