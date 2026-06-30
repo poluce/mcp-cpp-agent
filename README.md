@@ -75,16 +75,16 @@ QObject::connect(client.get(), &McpQtClient::disconnected, []{ qDebug() << "disc
 
 | 分类 | 方法 |
 |------|------|
-| 创建 | `connectHttp(url)` `connectStdio(cmd, args)` `connectWithOAuth(config)` |
-| 工具 | `listTools()` `listTools(cursor, &next)` `fetchAllTools()` `callTool(name, args)` `callTool(name, args, onProgress)` |
-| 资源 | `listResources()` `fetchAllResources()` `readResource(uri)` `subscribeResource(uri)` `unsubscribeResource(uri)` |
+| 创建 | `connectHttp(url)` `connectStdio(cmd, args)` `connectWithOAuth(config)` `McpQtClientBuilder::setHttpHeaders()` `McpQtClientBuilder::setHttpProxy()` `McpQtClientBuilder::setReconnectPolicy()` |
+| 工具 | `listTools()` `listTools(cursor, &next)` `fetchAllTools()` `callTool(name, args)` `callTool(name, args, onProgress)` `callToolTyped()` `callToolTypedAsync()` `createToolsModel()` |
+| 资源 | `listResources()` `fetchAllResources()` `readResource(uri)` `subscribeResource(uri)` `subscribeResource(uri, callback)` `unsubscribeResource(uri)` `unsubscribeResourceByToken()` |
 | 资源模板 | `listResourceTemplates()` `fetchAllResourceTemplates()` |
 | 提示词 | `listPrompts()` `fetchAllPrompts()` `getPrompt(name, args)` |
-| 其他 | `ping()` `complete(ref, arg)` `setLoggingLevel(level)` |
+| 其他 | `ping()` `complete(ref, arg)` `setLoggingLevel(level)` `setTrafficLogger()` |
 | 双向 | `setElicitationHandler(handler)` `setSamplingHandler(handler)` `setRootsProvider(provider)` `notifyRootsListChanged()` |
 | 通知 | `registerNotificationHandler()` `enableNotificationDebounce()` `sendNotification()` |
 | 异步 | `callToolAsync(name, args, [context], callback)` `sendRequest(method, params, [context], callback)` `cancelRequest(id)` |
-| 生命周期 | `isConnected()` `close()` |
+| 生命周期 | `isConnected()` `close()` `setReconnectPolicy()` `setTransportFactory()` |
 
 ### McpClientSession 底层 API
 
@@ -149,6 +149,85 @@ mcp-cpp-agent/
  ├── conformance_runner_qt/          # 官方合规测试客户端（Qt 版）
  ├── tests/                          # 单元测试
  └── tests_qt/                       # Qt 传输层测试
+```
+
+---
+
+## SDK 加固高级特性 (Hardening Features)
+
+### 1. 全流量 Tracing 追踪
+通过在客户端设置回调，可拦截所有请求和响应报文（出站/入站），并获得时间戳、方向、类型以及结构化 JSON payload：
+```cpp
+client->setTrafficLogger([](const QJsonObject& event) {
+    qDebug() << "Timestamp:" << event["timestamp"].toString();
+    qDebug() << "Direction:" << event["direction"].toString();
+    qDebug() << "Kind:" << event["kind"].toString();
+    qDebug() << "Raw:" << event["raw"].toString();
+    qDebug() << "Payload:" << event["payload"].toObject();
+});
+```
+
+### 2. 高级 HTTP/HTTPS 配置 (自定义 Headers & 代理)
+支持为远程 HTTP/SSE 通道动态指定自定义请求头（如身份凭证）以及配置代理服务器：
+```cpp
+McpQtClientBuilder builder;
+builder.setTransportHttp("http://localhost:8080/mcp")
+       .setHttpHeaders({{"Authorization", "Bearer token-value"}})
+       .setHttpProxy(QNetworkProxy(QNetworkProxy::HttpProxy, "my-proxy", 8080));
+auto client = builder.buildAndConnect();
+```
+
+### 3. 类型化工具返回对象 (Typed Tool Results)
+无缝解析复合型工具返回，支持自动解码 Base64 格式的图片数据、提取结构化 JSON：
+```cpp
+McpQtToolResult result = client->callToolTyped("generate_image", {{"prompt", "sunset"}});
+if (!result.isError) {
+    for (const auto& content : result.content) {
+        if (content.kind == McpQtContentKind::Image) {
+            QByteArray binaryData = content.binary; // 已经自动解码的原始二进制图片数据
+            QString mime = content.mimeType;
+        } else if (content.kind == McpQtContentKind::Text) {
+            qDebug() << "Text response:" << content.text;
+        }
+    }
+}
+```
+
+### 4. 资源更新精确订阅路由 (Subscription Routing)
+在 resources/subscribe 之上支持注册 Lambda 级别回调，收到对应的 notifications/resources/updated 消息时精准派发：
+```cpp
+int token = client->subscribeResource("file:///data/config.json", [](const QString& uri, const QJsonObject& params) {
+    qDebug() << "Resource updated:" << uri << "new version:" << params["version"].toString();
+});
+// 撤销该回调监听：
+client->unsubscribeResourceByToken("file:///data/config.json", token);
+```
+
+### 5. 工具列表 MVC 绑定 (McpToolsModel)
+提供直接继承自 `QAbstractListModel` 的工具模型适配器，支持与 ListView 直接绑定，并在后端工具变化时（`list-changed`）自动更新。集成**深度属性值比对防 Churn（防视图重置闪烁）**机制：
+```cpp
+auto model = client->createToolsModel(parent);
+listView->setModel(model.get());
+// 填充/拉取数据
+model->refresh();
+```
+
+### 6. 状态恢复、指数避退重连与自愈
+支持在网络通道抖动或 Stdio 子进程意外死掉时自动重连。客户端会自动处理**重新初始化 (Reinitialize) 协商**、**自动恢复用户已绑定的通知处理器**、以及**自动重发 resources/subscribe 订阅状态**：
+```cpp
+mcp::McpReconnectPolicy policy;
+policy.enabled = true;
+policy.initialDelayMs = 250;
+policy.maxDelayMs = 5000;
+policy.multiplier = 2.0;
+policy.maxAttempts = 5; // -1 表示无限制重试
+
+client->setReconnectPolicy(policy);
+
+// 重连信号流：
+QObject::connect(client.get(), &McpQtClient::reconnecting, [] { qDebug() << "网络异常，正在重试..."; });
+QObject::connect(client.get(), &McpQtClient::reconnected,  [] { qDebug() << "通道自愈重连成功，状态已恢复！"; });
+QObject::connect(client.get(), &McpQtClient::recoveryFailed, [](const QString& msg) { qDebug() << "重连失败:" << msg; });
 ```
 
 ---

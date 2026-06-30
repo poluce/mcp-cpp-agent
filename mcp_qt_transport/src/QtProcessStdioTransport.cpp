@@ -12,6 +12,9 @@ QtProcessStdioTransport::QtProcessStdioTransport(const std::string& command, con
 }
 
 QtProcessStdioTransport::~QtProcessStdioTransport() {
+    if (m_process) {
+        m_process->disconnect();
+    }
     close();
 }
 

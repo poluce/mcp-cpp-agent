@@ -8,11 +8,13 @@ add_executable(mcp_core_tests
     transport/test_stdio_transport.cpp
     transport/test_process_lifecycle.cpp
     features/test_tools.cpp
+    features/test_traffic_logging.cpp
     features/test_resources.cpp
     features/test_prompts.cpp
     features/test_notifications.cpp
     features/test_new_capabilities.cpp
     features/test_sampling_roots_oauth.cpp
+    features/test_recovery.cpp
 )
 
 # Windows 控制台应用

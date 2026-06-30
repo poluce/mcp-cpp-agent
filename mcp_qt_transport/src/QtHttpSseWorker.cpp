@@ -63,11 +63,20 @@ QtHttpSseWorker::QtHttpSseWorker(QString baseUrl, QObject* parent)
 void QtHttpSseWorker::setProtocolVersion(const QString& version) { m_protocolVersion = version; }
 void QtHttpSseWorker::setTokenProvider(std::function<std::string()> provider) { m_tokenProvider = std::move(provider); }
 void QtHttpSseWorker::setAuthRetryHandler(std::function<bool(const std::string&)> handler) { m_authRetryHandler = std::move(handler); }
+void QtHttpSseWorker::setRequestConfig(const QtHttpRequestConfig& config) {
+    m_requestConfig = config;
+    if (m_network && m_requestConfig.proxy) {
+        m_network->setProxy(*m_requestConfig.proxy);
+    }
+}
 
 void QtHttpSseWorker::startStream() {
     m_stopping = false;
     if (!m_network) {
         m_network = new QNetworkAccessManager(this);
+        if (m_requestConfig.proxy) {
+            m_network->setProxy(*m_requestConfig.proxy);
+        }
     }
     openSse();
 }
@@ -92,6 +101,9 @@ QString QtHttpSseWorker::currentBearerToken() const {
 }
 
 void QtHttpSseWorker::applyCommonHeaders(QNetworkRequest& request) const {
+    for (auto it = m_requestConfig.defaultHeaders.constBegin(); it != m_requestConfig.defaultHeaders.constEnd(); ++it) {
+        request.setRawHeader(it.key(), it.value());
+    }
     request.setRawHeader("Accept", "text/event-stream");
     request.setRawHeader("Cache-Control", "no-cache");
     request.setRawHeader("MCP-Protocol-Version", m_protocolVersion.toUtf8());
@@ -102,7 +114,7 @@ void QtHttpSseWorker::applyCommonHeaders(QNetworkRequest& request) const {
         request.setRawHeader("Last-Event-ID", m_lastEventId.toUtf8());
     }
     const QString token = currentBearerToken();
-    if (!token.isEmpty()) {
+    if (!token.isEmpty() && m_requestConfig.allowAuthorizationOverride) {
         request.setRawHeader("Authorization", "Bearer " + token.toUtf8());
     }
 }
@@ -170,13 +182,22 @@ void QtHttpSseWorker::handleSseFinished() {
         return;
     }
 
+    bool wasConnected = m_sseConnected;
+    m_sseConnected = false;
+
     // 非 200 且有 sessionId：快速重连（100ms，不等默认 2000ms）
     if (statusCode != 200 && !m_sessionId.isEmpty()) {
         QTimer::singleShot(100, this, &QtHttpSseWorker::openSse);
+        if (wasConnected) {
+            emit transportError("SSE stream disconnected unexpectedly");
+        }
         return;
     }
 
     scheduleReconnect();
+    if (wasConnected) {
+        emit transportError("SSE stream disconnected unexpectedly");
+    }
 }
 
 void QtHttpSseWorker::handleSseError(QNetworkReply::NetworkError) {
@@ -208,9 +229,15 @@ bool QtHttpSseWorker::postMessage(const QString& payload, int retryCount) {
     }
     if (!m_network) {
         m_network = new QNetworkAccessManager(this);
+        if (m_requestConfig.proxy) {
+            m_network->setProxy(*m_requestConfig.proxy);
+        }
     }
     QNetworkRequest request;
     request.setUrl(QUrl(m_postUrl));
+    for (auto it = m_requestConfig.defaultHeaders.constBegin(); it != m_requestConfig.defaultHeaders.constEnd(); ++it) {
+        request.setRawHeader(it.key(), it.value());
+    }
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
     request.setRawHeader("Accept", "application/json, text/event-stream");
     request.setRawHeader("MCP-Protocol-Version", m_protocolVersion.toUtf8());
@@ -218,7 +245,7 @@ bool QtHttpSseWorker::postMessage(const QString& payload, int retryCount) {
         request.setRawHeader("MCP-Session-Id", m_sessionId.toUtf8());
     }
     const QString token = currentBearerToken();
-    if (!token.isEmpty()) {
+    if (!token.isEmpty() && m_requestConfig.allowAuthorizationOverride) {
         request.setRawHeader("Authorization", "Bearer " + token.toUtf8());
     }
 

@@ -85,7 +85,7 @@ add_subdirectory(conformance_runner)
 option(MCP_ENABLE_QT_TRANSPORT "Build Qt-based HTTP/SSE transport for Qt agents" OFF)
 
 if(MCP_ENABLE_QT_TRANSPORT)
-    find_package(Qt6 REQUIRED COMPONENTS Core Network)
+    find_package(Qt6 REQUIRED COMPONENTS Core Network Test)
     add_subdirectory(mcp_qt_transport)
     add_subdirectory(mcp_qt_client)
     add_subdirectory(conformance_runner_qt)

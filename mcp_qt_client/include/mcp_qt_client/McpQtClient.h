@@ -7,14 +7,23 @@
 #include <mcp_core/McpOAuthClient.h>
 #include <mcp_qt_transport/QtHttpSseTransport.h>
 #include <mcp_qt_transport/QtProcessStdioTransport.h>
+#include <mcp_qt_client/McpQtToolResult.h>
+#include <mcp_qt_client/McpResourceSubscriptionRouter.h>
+#include <mcp_qt_client/McpToolsModel.h>
+#include <mcp_core/McpReconnectPolicy.h>
 
 #include <QObject>
+#include <QPointer>
+#include <QTimer>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QString>
 #include <functional>
 #include <memory>
+#include <mutex>
+#include <unordered_map>
+#include <vector>
 
 namespace mcp_qt {
 
@@ -37,6 +46,9 @@ public:
     McpQtClientBuilder& setTransportStdio(const QString& command, const QStringList& args = {});
     McpQtClientBuilder& setClientInfo(const QString& name, const QString& version);
     McpQtClientBuilder& setTimeout(int ms);
+    McpQtClientBuilder& setHttpHeaders(const QMap<QString, QString>& headers);
+    McpQtClientBuilder& setHttpProxy(const QNetworkProxy& proxy);
+    McpQtClientBuilder& setReconnectPolicy(const mcp::McpReconnectPolicy& policy);
     std::shared_ptr<McpQtClient> buildAndConnect(QString* errorString = nullptr);
 private:
     int m_transportType{0}; // 0=none, 1=http, 2=stdio
@@ -45,6 +57,9 @@ private:
     QString m_clientName{QStringLiteral("mcp-qt-client")};
     QString m_clientVersion{QStringLiteral("1.0.0")};
     int m_timeoutMs{10000};
+    QMap<QString, QString> m_httpHeaders;
+    std::optional<QNetworkProxy> m_proxy;
+    mcp::McpReconnectPolicy m_reconnectPolicy;
 };
 
 /**
@@ -65,6 +80,7 @@ private:
  */
 class McpQtClient : public QObject {
     Q_OBJECT
+    friend class McpQtClientBuilder;
 public:
     using Ptr = std::shared_ptr<McpQtClient>;
 
@@ -94,6 +110,11 @@ public:
                             int timeoutMs = 10000,
                             QString* errorString = nullptr);
 
+    /// 测试专用静态工厂（允许直接分配 client 实例以进行 MockTransport 测试）
+    static Ptr createForTest(QObject* parent = nullptr) {
+        return Ptr(new McpQtClient(parent));
+    }
+
     /// HTTP/SSE + OAuth
     static Ptr connectWithOAuth(const OAuthConfig& oauth,
                                 const QString& clientName = QStringLiteral("mcp-qt-client"),
@@ -115,6 +136,10 @@ public:
     std::vector<McpQtTool> listTools(const QString& cursor, QString* nextCursor, int timeoutMs = 10000);
     std::vector<McpQtTool> fetchAllTools(int timeoutMs = 10000);
 
+    /// 创建工具列表 Model（需调用方自行情寛 Model 生命周期）
+    /// 返回的 McpToolsModel 已绑定当前 client，可直接调用 refresh() 填充数据
+    std::unique_ptr<McpToolsModel> createToolsModel(QObject* parent = nullptr);
+
     /// 调用工具（同步，对齐 TS `callTool()`）
     McpResult callTool(const QString& name, const QJsonObject& arguments, int timeoutMs = 10000);
 
@@ -133,6 +158,14 @@ public:
                        std::function<void(McpResult)> callback,
                        ProgressCallback onProgress = nullptr);
 
+    /// 调用工具（同步，返回类型化结果，不丢弃原始 JSON）
+    McpQtToolResult callToolTyped(const QString& name, const QJsonObject& arguments, int timeoutMs = 10000);
+
+    /// 调用工具（异步，返回类型化结果）
+    void callToolTypedAsync(const QString& name, const QJsonObject& arguments,
+                            std::function<void(McpQtToolResult)> callback,
+                            int timeoutMs = 10000);
+
     // ========== Resources（对齐 TS `listResources()`, `readResource()`, `subscribeResource()`）==========
 
     QJsonObject listResources(int timeoutMs = 10000);
@@ -141,6 +174,18 @@ public:
     QJsonObject readResource(const QString& uri, int timeoutMs = 10000);
     bool subscribeResource(const QString& uri, int timeoutMs = 10000);
     bool unsubscribeResource(const QString& uri, int timeoutMs = 10000);
+
+    /// 订阅资源更新（callback 派发式）——发送 resources/subscribe 并注册路由回调
+    /// @param uri      要订阅的资源 URI
+    /// @param callback 收到 notifications/resources/updated 时派发
+    /// @param timeoutMs RPC 超时（毫秒）
+    /// @return 路由 token，传入 unsubscribeResource() 撤销回调（返回 -1 表示失败）
+    int subscribeResource(const QString& uri,
+                          std::function<void(const QString& uri, const QJsonObject& params)> callback,
+                          int timeoutMs = 10000);
+
+    /// 撤销订阅（通过 token）并发送 resources/unsubscribe
+    bool unsubscribeResourceByToken(const QString& uri, int routerToken, int timeoutMs = 10000);
 
     // ========== Resource Templates（对齐 TS `listResourceTemplates()`）==========
 
@@ -161,6 +206,9 @@ public:
     QJsonObject complete(const QJsonObject& ref, const QJsonObject& argument, int timeoutMs = 10000);
     /// 设置服务端日志级别，发送 logging/setLevel 请求
     bool setLoggingLevel(const QString& level, int timeoutMs = 5000);
+
+    using TrafficLogger = std::function<void(const QJsonObject& event)>;
+    void setTrafficLogger(TrafficLogger logger);
 
     // ========== 双向能力（对齐 TS `setRequestHandler()`）==========
 
@@ -202,11 +250,18 @@ public:
 
     void registerCapability(const QString& name, const QJsonObject& config);
 
-    // ========== 生命周期（对齐 TS `close()`）==========
+    // ========== 生命周期与重连（对齐 TS `close()`）==========
 
     bool isConnected() const;
     /// 优雅关闭（发送 shutdown 请求后关闭 transport）
     void close(int timeoutMs = 5000);
+
+    /// 设置重连策略
+    void setReconnectPolicy(const mcp::McpReconnectPolicy& policy);
+    mcp::McpReconnectPolicy reconnectPolicy() const;
+
+    /// 设置重连 Transport 构造工厂（测试或高级地址切换用）
+    void setTransportFactory(std::function<std::shared_ptr<mcp::IMcpTransport>()> factory);
 
     // ========== 异步连接 ==========
 
@@ -222,6 +277,11 @@ signals:
     /// 收到服务端的任意通知
     void notificationReceived(const QString& method, const QJsonObject& params);
 
+    // 重连状态信号
+    void reconnecting();
+    void reconnected();
+    void recoveryFailed(const QString& message);
+
 private:
     explicit McpQtClient(QObject* parent = nullptr);
 
@@ -236,6 +296,56 @@ private:
     bool m_initialized{false};
     mutable std::map<QString, QJsonObject> m_toolSchemaCache;
     bool validateToolSchemaLocally(const QString& name, const QJsonObject& arguments, QString* errorString) const;
+
+    TrafficLogger m_trafficLogger;
+    McpResourceSubscriptionRouter m_resourceRouter;
+
+    // 重连与恢复上下文
+    int m_transportType{0}; // 0=none/test, 1=http, 2=stdio
+    QString m_url_or_cmd;
+    QStringList m_args;
+    QMap<QString, QString> m_httpHeaders;
+    std::optional<QNetworkProxy> m_proxy;
+    QString m_clientName{QStringLiteral("mcp-qt-client")};
+    QString m_clientVersion{QStringLiteral("1.0.0")};
+    int m_timeoutMs{10000};
+
+    mcp::McpReconnectPolicy m_reconnectPolicy;
+    class QTimer* m_reconnectTimer{nullptr};
+    int m_reconnectAttempts{0};
+    bool m_isUserClosed{false};
+    bool m_inRecovery{false};
+
+    struct NotificationHandlerEntry {
+        QString method;
+        QPointer<QObject> context;
+        std::function<void(const QJsonObject&)> handler;
+        bool hasContext;
+    };
+    QList<NotificationHandlerEntry> m_savedNotificationHandlers;
+
+    std::function<std::shared_ptr<mcp::IMcpTransport>()> m_transportFactory;
+    QList<QPointer<McpToolsModel>> m_toolsModels;
+
+    struct ReplayableRequest {
+        QString method;
+        QJsonObject params;
+        QPointer<QObject> context;
+        bool hasContext{false};
+        std::function<void(const QJsonObject&, const QJsonObject&)> callback;
+        ProgressCallback progressCallback;
+    };
+    mutable std::mutex m_replayMutex;
+    std::vector<ReplayableRequest> m_queuedReplayRequests;
+    std::unordered_map<int64_t, ReplayableRequest> m_inFlightReplayableRequests;
+
+    void handleTransportFailure();
+    void executeReconnectAttempt();
+    void restoreNotificationHandlers();
+    void restoreResourceSubscriptions();
+    void refreshToolsAfterRecovery();
+    void replayQueuedRequests();
+    bool isReplayableMethod(const QString& method) const;
 };
 
 } // namespace mcp_qt

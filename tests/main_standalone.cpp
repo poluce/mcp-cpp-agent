@@ -19,6 +19,7 @@ void runAllLocalTests() {
     // 3. Feature Tests
     TmTestRunner::instance().startTestSuite("Feature Tests");
     TM_RUN_TEST(test_tools);
+    TM_RUN_TEST(test_traffic_logging);
     TM_RUN_TEST(test_resources);
     TM_RUN_TEST(test_prompts);
     TM_RUN_TEST(test_notifications);
@@ -37,6 +38,7 @@ void runAllLocalTests() {
     TM_RUN_TEST(test_elicitation_full);
     TM_RUN_TEST(test_oauth_client);
     TM_RUN_TEST(test_notification_debounce);
+    TM_RUN_TEST(test_recovery);
 
     TmTestRunner::instance().printSummary();
 

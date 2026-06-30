@@ -10,6 +10,7 @@
 #include <functional>
 
 #include "QtSseParser.h"
+#include "mcp_qt_transport/QtHttpSseTransport.h"
 
 namespace mcp_qt {
 
@@ -21,6 +22,7 @@ public:
     void setProtocolVersion(const QString& version);
     void setTokenProvider(std::function<std::string()> provider);
     void setAuthRetryHandler(std::function<bool(const std::string&)> handler);
+    void setRequestConfig(const QtHttpRequestConfig& config);
 
     bool postMessage(const QString& payload, int retryCount = 0);
 
@@ -54,6 +56,7 @@ private:
     bool m_sseConnected{false};
     std::function<std::string()> m_tokenProvider;
     std::function<bool(const std::string&)> m_authRetryHandler;
+    QtHttpRequestConfig m_requestConfig;
     class QNetworkAccessManager* m_network{nullptr};
     QPointer<QNetworkReply> m_sseReply;
     QTimer* m_reconnectTimer{nullptr};

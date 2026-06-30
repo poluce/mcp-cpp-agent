@@ -3,10 +3,20 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <QMap>
+#include <QByteArray>
+#include <QNetworkProxy>
+#include <optional>
 
 #include "mcp_core/IMcpTransport.h"
 
 namespace mcp_qt {
+
+struct QtHttpRequestConfig {
+    QMap<QByteArray, QByteArray> defaultHeaders;
+    std::optional<QNetworkProxy> proxy;
+    bool allowAuthorizationOverride{true};
+};
 
 class QtHttpSseTransport final : public mcp::IMcpTransport {
 public:
@@ -26,6 +36,9 @@ public:
 
     void setTokenProvider(TokenProvider provider);
     void setAuthRetryHandler(AuthRetryHandler handler);
+
+    void setRequestConfig(const QtHttpRequestConfig& config);
+    QtHttpRequestConfig requestConfig() const;
 
 private:
     class Impl;

@@ -14,6 +14,7 @@
 #include "McpTool.h"
 #include "McpResource.h"
 #include "McpPrompt.h"
+#include "McpTrafficEvent.h"
 
 namespace mcp {
 
@@ -361,8 +362,14 @@ public:
     using ErrorCallback = std::function<void(const std::string& error)>;
     void setOnError(ErrorCallback callback);
 
+    using CloseCallback = std::function<void()>;
+    void setOnClose(CloseCallback callback);
+
     using GenericNotificationCallback = std::function<void(const std::string& method, const json& params)>;
     void setNotificationCallback(GenericNotificationCallback callback);
+
+    using TrafficCallback = std::function<void(const McpTrafficEvent&)>;
+    void setTrafficCallback(TrafficCallback callback);
 
     /**
      * @brief Override the default protocol version for the next initialize call.
@@ -398,7 +405,9 @@ private:
     std::atomic<SessionState> m_state{SessionState::Uninitialized};
     LogCallback m_logCallback;
     ErrorCallback m_errorCallback;
+    CloseCallback m_onCloseCallback;
     GenericNotificationCallback m_genericNotificationCallback;
+    TrafficCallback m_trafficCallback;
 
     // 双向能力处理器
     SamplingHandler m_samplingHandler;

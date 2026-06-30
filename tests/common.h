@@ -158,33 +158,29 @@ private:
 // ============================================================================
 // Enhanced MockTransport - Memory transport mock class
 // ============================================================================
+struct MockTransportState {
+    std::mutex mutex;
+    std::function<void(const std::string&)> onMessage;
+    std::function<void()> onClose;
+    std::function<void(const std::string&)> onError;
+    bool closed = false;
+};
+
 class MockTransport : public mcp::IMcpTransport {
 public:
     std::string lastSentMessage;
     std::string negotiatedProtocolVersion;
     std::function<void(const std::string&)> onSendCallback;
-    std::function<void(const std::string&)> m_onMessage;
-    std::function<void()> m_onClose;
-    std::function<void(const std::string&)> m_onError;
+
+    std::shared_ptr<MockTransportState> m_state = std::make_shared<MockTransportState>();
 
     void setProtocolVersion(const std::string& version) override {
         negotiatedProtocolVersion = version;
     }
-    
-    std::mutex m_mockMutex;
-    std::vector<std::thread> m_threads;
-    bool m_closed = false;
 
-    ~MockTransport() override {
-        for (auto& t : m_threads) {
-            if (t.joinable()) {
-                t.join();
-            }
-        }
-    }
+    ~MockTransport() override = default;
 
     bool send(const std::string& message) override {
-        std::lock_guard<std::mutex> lock(m_mockMutex);
         lastSentMessage = message;
         if (onSendCallback) {
             onSendCallback(message);
@@ -193,56 +189,74 @@ public:
     }
     
     void setOnMessage(std::function<void(const std::string&)> callback) override {
-        m_onMessage = std::move(callback);
+        std::lock_guard<std::mutex> lock(m_state->mutex);
+        m_state->onMessage = std::move(callback);
     }
     
     void setOnClose(std::function<void()> callback) override {
-        m_onClose = std::move(callback);
+        std::lock_guard<std::mutex> lock(m_state->mutex);
+        m_state->onClose = std::move(callback);
     }
     
     void setOnError(std::function<void(const std::string&)> callback) override {
-        m_onError = std::move(callback);
+        std::lock_guard<std::mutex> lock(m_state->mutex);
+        m_state->onError = std::move(callback);
     }
     
     bool start() override { 
-        m_closed = false;
+        std::lock_guard<std::mutex> lock(m_state->mutex);
+        m_state->closed = false;
         return true; 
     }
     
     void close() override { 
+        std::function<void()> cb;
         {
-            std::lock_guard<std::mutex> lock(m_mockMutex);
-            if (m_closed) return;
-            m_closed = true;
+            std::lock_guard<std::mutex> lock(m_state->mutex);
+            if (m_state->closed) return;
+            m_state->closed = true;
+            cb = m_state->onClose;
         }
-        if (m_onClose) m_onClose(); 
+        if (cb) cb(); 
     }
 
     void pushServerMessage(const std::string& msg) {
-        if (m_onMessage) {
-            m_onMessage(msg);
+        std::function<void(const std::string&)> cb;
+        {
+            std::lock_guard<std::mutex> lock(m_state->mutex);
+            cb = m_state->onMessage;
+        }
+        if (cb) {
+            cb(msg);
         }
     }
 
     void pushServerMessageAsync(const std::string& msg, int delayMs = 5) {
-        m_threads.push_back(std::thread([this, msg, delayMs]() {
+        auto state = m_state;
+        std::thread t([state, msg, delayMs]() {
             if (delayMs > 0) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
             }
             std::function<void(const std::string&)> cb;
             {
-                std::lock_guard<std::mutex> lock(m_mockMutex);
-                cb = m_onMessage;
+                std::lock_guard<std::mutex> lock(state->mutex);
+                cb = state->onMessage;
             }
             if (cb) {
                 cb(msg);
             }
-        }));
+        });
+        t.detach();
     }
 
     void triggerError(const std::string& err) {
-        if (m_onError) {
-            m_onError(err);
+        std::function<void(const std::string&)> cb;
+        {
+            std::lock_guard<std::mutex> lock(m_state->mutex);
+            cb = m_state->onError;
+        }
+        if (cb) {
+            cb(err);
         }
     }
 };
@@ -258,6 +272,7 @@ void test_http_transport();
 void test_process_lifecycle();
 
 void test_tools();
+void test_traffic_logging();
 void test_resources();
 void test_prompts();
 void test_notifications();
@@ -273,6 +288,7 @@ void test_roots();
 void test_elicitation_full();
 void test_oauth_client();
 void test_notification_debounce();
+void test_recovery();
 
 void test_with_filesystem_server();
 void test_with_anysearch_mcp();

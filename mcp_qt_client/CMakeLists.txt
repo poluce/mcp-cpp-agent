@@ -3,6 +3,8 @@ set(CMAKE_AUTOMOC ON)
 add_library(mcp_qt_client STATIC
     include/mcp_qt_client/McpQtClient.h
     src/McpQtClient.cpp
+    include/mcp_qt_client/McpToolsModel.h
+    src/McpToolsModel.cpp
 )
 
 target_include_directories(mcp_qt_client PUBLIC

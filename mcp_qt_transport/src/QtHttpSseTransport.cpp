@@ -19,6 +19,7 @@ public:
     std::function<void(const std::string&)> onError;
     TokenProvider tokenProvider;
     AuthRetryHandler authRetryHandler;
+    QtHttpRequestConfig requestConfig;
     QThread* thread{nullptr};
     QtHttpSseWorker* worker{nullptr};
     bool running{false};
@@ -41,6 +42,7 @@ bool QtHttpSseTransport::start() {
     m_impl->worker->setProtocolVersion(QString::fromStdString(m_impl->protocolVersion));
     m_impl->worker->setTokenProvider(m_impl->tokenProvider);
     m_impl->worker->setAuthRetryHandler(m_impl->authRetryHandler);
+    m_impl->worker->setRequestConfig(m_impl->requestConfig);
 
     QObject::connect(m_impl->thread, &QThread::started, m_impl->worker, &QtHttpSseWorker::startStream);
     QObject::connect(m_impl->worker, &QtHttpSseWorker::messageReceived, [this](const QString& msg) {
@@ -129,6 +131,19 @@ void QtHttpSseTransport::setAuthRetryHandler(AuthRetryHandler handler) {
             worker->setAuthRetryHandler(handler);
         });
     }
+}
+
+void QtHttpSseTransport::setRequestConfig(const QtHttpRequestConfig& config) {
+    m_impl->requestConfig = config;
+    if (m_impl->running && m_impl->worker) {
+        QMetaObject::invokeMethod(m_impl->worker, [worker = m_impl->worker, config]() {
+            worker->setRequestConfig(config);
+        });
+    }
+}
+
+QtHttpRequestConfig QtHttpSseTransport::requestConfig() const {
+    return m_impl->requestConfig;
 }
 
 } // namespace mcp_qt

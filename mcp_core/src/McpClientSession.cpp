@@ -47,6 +47,9 @@ void McpClientSession::init() {
                     cb(json::object(), connErr);
                 }
             }
+            if (self->m_onCloseCallback) {
+                self->m_onCloseCallback();
+            }
         }
     });
 
@@ -105,7 +108,16 @@ int64_t McpClientSession::sendRequest(const std::string& method, const json& par
     }
 
     log(LogLevel::Debug, "sendRequest: method=" + method + ", id=" + std::to_string(id));
-    m_transport->send(requestMsg.dump());
+    std::string dumpStr = requestMsg.dump();
+    if (m_trafficCallback) {
+        McpTrafficEvent event;
+        event.direction = McpTrafficDirection::Outbound;
+        event.kind = McpTrafficKind::Request;
+        event.payload = requestMsg;
+        event.raw = dumpStr;
+        m_trafficCallback(event);
+    }
+    m_transport->send(dumpStr);
     return id;
 }
 
@@ -115,7 +127,16 @@ void McpClientSession::sendNotification(const std::string& method, const json& p
         {"method", method},
         {"params", params}
     };
-    m_transport->send(notificationMsg.dump());
+    std::string dumpStr = notificationMsg.dump();
+    if (m_trafficCallback) {
+        McpTrafficEvent event;
+        event.direction = McpTrafficDirection::Outbound;
+        event.kind = McpTrafficKind::Notification;
+        event.payload = notificationMsg;
+        event.raw = dumpStr;
+        m_trafficCallback(event);
+    }
+    m_transport->send(dumpStr);
 }
 
 void McpClientSession::registerNotificationHandler(const std::string& method, NotificationCallback callback) {
@@ -141,6 +162,26 @@ void McpClientSession::handleIncomingMessage(const std::string& rawMessage) {
     if (!j.is_object()) {
         log(LogLevel::Warning, "Incoming message is not a JSON object: " + rawMessage);
         return;
+    }
+
+    if (m_trafficCallback) {
+        McpTrafficKind kind = McpTrafficKind::Unknown;
+        if (j.contains("id")) {
+            if (j.contains("result") || j.contains("error")) {
+                kind = McpTrafficKind::Response;
+            } else if (j.contains("method")) {
+                kind = McpTrafficKind::Request;
+            }
+        } else if (j.contains("method")) {
+            kind = McpTrafficKind::Notification;
+        }
+
+        McpTrafficEvent event;
+        event.direction = McpTrafficDirection::Inbound;
+        event.kind = kind;
+        event.payload = j;
+        event.raw = rawMessage;
+        m_trafficCallback(event);
     }
 
     if (j.contains("id")) {
@@ -1291,9 +1332,19 @@ void McpClientSession::setOnError(ErrorCallback callback) {
     m_errorCallback = std::move(callback);
 }
 
+void McpClientSession::setOnClose(CloseCallback callback) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_onCloseCallback = std::move(callback);
+}
+
 void McpClientSession::setNotificationCallback(GenericNotificationCallback callback) {
     std::lock_guard<std::mutex> lock(m_mutex);
     m_genericNotificationCallback = std::move(callback);
+}
+
+void McpClientSession::setTrafficCallback(TrafficCallback callback) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_trafficCallback = std::move(callback);
 }
 
 void McpClientSession::setProtocolVersion(const std::string& version) {

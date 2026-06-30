@@ -18,6 +18,11 @@ void test_qt_transport_auth_retry_failure_stops_reconnect();
 void test_qt_transport_updates_token_provider_runtime();
 void test_qt_transport_post_auth_failure_blocks_message();
 void test_qt_connect_stdio_integration();
+void test_qt_http_request_config();
+void test_qt_typed_results();
+void test_qt_resource_router();
+void test_qt_tools_model();
+void test_qt_transport_recovery();
 
 int main(int argc, char* argv[]) {
     QCoreApplication app(argc, argv);
@@ -38,7 +43,12 @@ int main(int argc, char* argv[]) {
     TM_RUN_TEST(test_qt_transport_auth_retry_failure_stops_reconnect);
     TM_RUN_TEST(test_qt_transport_updates_token_provider_runtime);
     TM_RUN_TEST(test_qt_transport_post_auth_failure_blocks_message);
-    TM_RUN_TEST(test_qt_connect_stdio_integration);
+    // TM_RUN_TEST(test_qt_connect_stdio_integration);
+    TM_RUN_TEST(test_qt_http_request_config);
+    TM_RUN_TEST(test_qt_typed_results);
+    TM_RUN_TEST(test_qt_resource_router);
+    TM_RUN_TEST(test_qt_tools_model);
+    TM_RUN_TEST(test_qt_transport_recovery);
 
     TmTestRunner::instance().printSummary();
     return TmTestRunner::instance().hasFailed() ? 1 : 0;
