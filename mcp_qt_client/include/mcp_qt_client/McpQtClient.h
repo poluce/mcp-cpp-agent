@@ -18,6 +18,35 @@
 
 namespace mcp_qt {
 
+struct McpResult {
+    bool isError{false};
+    QJsonObject data;
+    QString errorString;
+};
+
+struct McpQtTool {
+    QString name;
+    QString description;
+    QJsonObject inputSchema;
+};
+
+class McpQtClient;
+class McpQtClientBuilder {
+public:
+    McpQtClientBuilder& setTransportHttp(const QString& url);
+    McpQtClientBuilder& setTransportStdio(const QString& command, const QStringList& args = {});
+    McpQtClientBuilder& setClientInfo(const QString& name, const QString& version);
+    McpQtClientBuilder& setTimeout(int ms);
+    std::shared_ptr<McpQtClient> buildAndConnect(QString* errorString = nullptr);
+private:
+    int m_transportType{0}; // 0=none, 1=http, 2=stdio
+    QString m_url_or_cmd;
+    QStringList m_args;
+    QString m_clientName{QStringLiteral("mcp-qt-client")};
+    QString m_clientVersion{QStringLiteral("1.0.0")};
+    int m_timeoutMs{10000};
+};
+
 /**
  * @brief 高层 MCP 客户端（QObject，信号/槽，语义对齐 TS SDK `Client`）
  *
@@ -55,13 +84,15 @@ public:
     static Ptr connectHttp(const QString& serverUrl,
                            const QString& clientName = QStringLiteral("mcp-qt-client"),
                            const QString& clientVersion = QStringLiteral("1.0.0"),
-                           int timeoutMs = 10000);
+                           int timeoutMs = 10000,
+                           QString* errorString = nullptr);
 
     /// Stdio 子进程连接
     static Ptr connectStdio(const QString& command, const QStringList& args = {},
                             const QString& clientName = QStringLiteral("mcp-qt-client"),
                             const QString& clientVersion = QStringLiteral("1.0.0"),
-                            int timeoutMs = 10000);
+                            int timeoutMs = 10000,
+                            QString* errorString = nullptr);
 
     /// HTTP/SSE + OAuth
     static Ptr connectWithOAuth(const OAuthConfig& oauth,
@@ -78,18 +109,22 @@ public:
 
     // ========== Tools（对齐 TS `listTools()`, `callTool()`）==========
 
-    /// 进度回调：服务端在处理请求时发送的进度通知
     using ProgressCallback = std::function<void(float progress, float total, const QString& message)>;
 
-    std::vector<mcp::McpTool> listTools(int timeoutMs = 10000);
-    std::vector<mcp::McpTool> listTools(const QString& cursor, QString* nextCursor, int timeoutMs = 10000);
+    std::vector<McpQtTool> listTools(int timeoutMs = 10000);
+    std::vector<McpQtTool> listTools(const QString& cursor, QString* nextCursor, int timeoutMs = 10000);
 
     /// 调用工具（同步，对齐 TS `callTool()`）
-    QJsonObject callTool(const QString& name, const QJsonObject& arguments, int timeoutMs = 10000);
+    McpResult callTool(const QString& name, const QJsonObject& arguments, int timeoutMs = 10000);
 
     /// 调用工具 + 进度通知（对齐 TS `callTool({...}, {onProgress})`）
-    QJsonObject callTool(const QString& name, const QJsonObject& arguments,
-                         ProgressCallback onProgress, int timeoutMs = 10000);
+    McpResult callTool(const QString& name, const QJsonObject& arguments,
+                       ProgressCallback onProgress, int timeoutMs = 10000);
+
+    /// 调用工具（纯异步，防止阻塞主线程）
+    void callToolAsync(const QString& name, const QJsonObject& arguments,
+                       std::function<void(McpResult)> callback,
+                       ProgressCallback onProgress = nullptr);
 
     // ========== Resources（对齐 TS `listResources()`, `readResource()`, `subscribeResource()`）==========
 
@@ -157,17 +192,20 @@ public:
 
     /// 连接到已有 transport（对齐 TS `connect(transport)`）
     bool connectToTransport(std::shared_ptr<mcp::IMcpTransport> transport,
-                           const QString& clientName, const QString& clientVersion, int timeoutMs = 10000);
+                           const QString& clientName, const QString& clientVersion, int timeoutMs = 10000, QString* errorString = nullptr);
 
 signals:
     void connected();
     void disconnected();
     void errorOccurred(const QString& message);
+    
+    /// 收到服务端的任意通知
+    void notificationReceived(const QString& method, const QJsonObject& params);
 
 private:
     explicit McpQtClient(QObject* parent = nullptr);
 
-    bool doInitialize(const QString& clientName, const QString& clientVersion, int timeoutMs);
+    bool doInitialize(const QString& clientName, const QString& clientVersion, int timeoutMs, QString* errorString = nullptr);
     bool doOAuth(const OAuthConfig& oauth);
 
     static nlohmann::json toNlohmann(const QJsonObject& obj);
