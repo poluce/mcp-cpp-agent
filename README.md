@@ -58,9 +58,9 @@ auto authClient = mcp_qt::McpQtClient::connectWithOAuth(oa);
 auto stdioClient = mcp_qt::McpQtClient::connectStdio("python", {"server.py"});
 
 // 双向能力
-client->setElicitationHandler([](const QJsonObject& params) { ... });
-client->setSamplingHandler([](const QJsonObject& params) { ... });
-client->setRootsProvider([]() -> QJsonArray { ... });
+client->setElicitationHandler([](const QJsonObject& params, auto callback) { ...; callback(result, error); });
+client->setSamplingHandler([](const QJsonObject& params, auto callback) { ...; callback(result, error); });
+client->setRootsProvider([](auto callback) { ...; callback(roots, error); });
 
 // 信号
 QObject::connect(client.get(), &McpQtClient::connected,    []{ qDebug() << "connected"; });
@@ -76,14 +76,14 @@ QObject::connect(client.get(), &McpQtClient::disconnected, []{ qDebug() << "disc
 | 分类 | 方法 |
 |------|------|
 | 创建 | `connectHttp(url)` `connectStdio(cmd, args)` `connectWithOAuth(config)` |
-| 工具 | `listTools()` `listTools(cursor, &next)` `callTool(name, args)` `callTool(name, args, onProgress)` |
-| 资源 | `listResources()` `readResource(uri)` `subscribeResource(uri)` `unsubscribeResource(uri)` |
-| 资源模板 | `listResourceTemplates()` |
-| 提示词 | `listPrompts()` `getPrompt(name, args)` |
+| 工具 | `listTools()` `listTools(cursor, &next)` `fetchAllTools()` `callTool(name, args)` `callTool(name, args, onProgress)` |
+| 资源 | `listResources()` `fetchAllResources()` `readResource(uri)` `subscribeResource(uri)` `unsubscribeResource(uri)` |
+| 资源模板 | `listResourceTemplates()` `fetchAllResourceTemplates()` |
+| 提示词 | `listPrompts()` `fetchAllPrompts()` `getPrompt(name, args)` |
 | 其他 | `ping()` `complete(ref, arg)` `setLoggingLevel(level)` |
-| 双向 | `setElicitationHandler()` `setSamplingHandler()` `setRootsProvider()` `notifyRootsListChanged()` |
+| 双向 | `setElicitationHandler(handler)` `setSamplingHandler(handler)` `setRootsProvider(provider)` `notifyRootsListChanged()` |
 | 通知 | `registerNotificationHandler()` `enableNotificationDebounce()` `sendNotification()` |
-| 异步 | `sendRequest(method, params, callback)` `cancelRequest(id)` |
+| 异步 | `callToolAsync(name, args, [context], callback)` `sendRequest(method, params, [context], callback)` `cancelRequest(id)` |
 | 生命周期 | `isConnected()` `close()` |
 
 ### McpClientSession 底层 API

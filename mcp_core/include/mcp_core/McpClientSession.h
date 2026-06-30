@@ -52,28 +52,28 @@ public:
 
     using ResponseCallback = std::function<void(const json& result, const json& error)>;
     using NotificationCallback = std::function<void(const json& params)>;
-    using RequestCallback = std::function<json(const std::string& method, const json& params)>;
+    using RequestCallback = std::function<void(const std::string& method, const json& params, std::function<void(const json& result, const json& error)> callback)>;
     using ProgressCallback = std::function<void(const json& progressInfo)>;
 
     /**
      * @brief Handler for sampling/createMessage requests from the server.
      *        Server asks client to perform LLM inference.
-     *        Returns the CreateMessageResult: {model, role, content, ...}
+     *        Calls callback with CreateMessageResult: {model, role, content, ...}
      */
-    using SamplingHandler = std::function<json(const json& params)>;
+    using SamplingHandler = std::function<void(const json& params, std::function<void(const json& result, const json& error)> callback)>;
 
     /**
      * @brief Handler for elicitation/create requests from the server.
      *        Server asks client to collect user input.
-     *        Returns: {action, content} or {action:"declined"} or {action:"cancelled"}
+     *        Calls callback with {action, content} or {action:"declined"} or {action:"cancelled"}
      */
-    using ElicitationHandler = std::function<json(const json& params)>;
+    using ElicitationHandler = std::function<void(const json& params, std::function<void(const json& result, const json& error)> callback)>;
 
     /**
      * @brief Provider for roots/list requests from the server.
-     *        Returns an array of root objects: [{uri, name}, ...]
+     *        Calls callback with an array of root objects: [{uri, name}, ...]
      */
-    using RootsProvider = std::function<json()>;
+    using RootsProvider = std::function<void(std::function<void(const json& result, const json& error)> callback)>;
 
     struct PendingRequest {
         ResponseCallback callback;
@@ -358,6 +358,12 @@ public:
 
     void setLogCallback(LogCallback callback);
 
+    using ErrorCallback = std::function<void(const std::string& error)>;
+    void setOnError(ErrorCallback callback);
+
+    using GenericNotificationCallback = std::function<void(const std::string& method, const json& params)>;
+    void setNotificationCallback(GenericNotificationCallback callback);
+
     /**
      * @brief Override the default protocol version for the next initialize call.
      *        When set, this value is used as the protocolVersion in the initialize request
@@ -391,6 +397,8 @@ private:
     std::unordered_map<std::string, RequestCallback> m_requestHandlers;
     std::atomic<SessionState> m_state{SessionState::Uninitialized};
     LogCallback m_logCallback;
+    ErrorCallback m_errorCallback;
+    GenericNotificationCallback m_genericNotificationCallback;
 
     // 双向能力处理器
     SamplingHandler m_samplingHandler;

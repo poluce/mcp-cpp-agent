@@ -166,7 +166,7 @@ void QtHttpSseWorker::handleSseFinished() {
             openSse();
             return;
         }
-        scheduleReconnect();
+        stopStream();
         return;
     }
 

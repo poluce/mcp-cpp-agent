@@ -23,16 +23,16 @@ void test_sampling() {
         // 注册 sampling handler
         bool samplingHandled = false;
         std::string receivedModel;
-        session->setSamplingHandler([&](const mcp::json& params) -> mcp::json {
+        session->setSamplingHandler([&](const mcp::json& params, std::function<void(const mcp::json&, const mcp::json&)> cb) {
             samplingHandled = true;
             if (params.contains("modelPreferences")) {
                 receivedModel = params["modelPreferences"].value("hints", "");
             }
-            return {
+            cb({
                 {"model", "test-model-1"},
                 {"role", "assistant"},
                 {"content", {{"type", "text"}, {"text", "Hello from sampling handler"}}}
-            };
+            }, mcp::json::object());
         });
 
         // 模拟服务端发送 sampling/createMessage 请求
@@ -107,11 +107,11 @@ void test_roots() {
         transport->pushServerMessage(initResp.dump());
 
         // 注册 roots provider
-        session->setRootsProvider([]() -> mcp::json {
-            return mcp::json::array({
+        session->setRootsProvider([](std::function<void(const mcp::json&, const mcp::json&)> cb) {
+            cb(mcp::json::array({
                 {{"uri", "file:///home/user/projects"}, {"name", "Projects"}},
                 {{"uri", "file:///home/user/documents"}, {"name", "Documents"}}
-            });
+            }), mcp::json::object());
         });
 
         // 模拟服务端发送 roots/list 请求
@@ -208,12 +208,12 @@ void test_elicitation_full() {
 
         // 注册 elicitation handler
         bool elicitationHandled = false;
-        session->setElicitationHandler([&](const mcp::json& params) -> mcp::json {
+        session->setElicitationHandler([&](const mcp::json& params, std::function<void(const mcp::json&, const mcp::json&)> cb) {
             elicitationHandled = true;
-            return {
+            cb({
                 {"action", "accept"},
                 {"content", {{"name", "张三"}, {"email", "zhangsan@example.com"}}}
-            };
+            }, mcp::json::object());
         });
 
         // 模拟服务端发送 elicitation/create 请求
@@ -250,8 +250,8 @@ void test_elicitation_full() {
         };
         transport->pushServerMessage(initResp.dump());
 
-        session->setElicitationHandler([](const mcp::json&) -> mcp::json {
-            return {{"action", "declined"}};
+        session->setElicitationHandler([](const mcp::json&, std::function<void(const mcp::json&, const mcp::json&)> cb) {
+            cb({{"action", "declined"}}, mcp::json::object());
         });
 
         mcp::json elicitationReq = {

@@ -316,9 +316,9 @@ void test_elicitation() {
 
         // 注册 elicitation handler
         bool elicitationHandled = false;
-        session->registerRequestHandler("elicitation/create", [&](const std::string& method, const mcp::json& params) -> mcp::json {
+        session->registerRequestHandler("elicitation/create", [&](const std::string& method, const mcp::json& params, std::function<void(const mcp::json&, const mcp::json&)> cb) {
             elicitationHandled = true;
-            return {{"action", "accept"}, {"content", {{"name", "test_value"}}}};
+            cb({{"action", "accept"}, {"content", {{"name", "test_value"}}}}, mcp::json::object());
         });
 
         // 模拟服务器发送 elicitation/create 请求

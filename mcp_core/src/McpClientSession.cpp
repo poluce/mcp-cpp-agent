@@ -49,6 +49,20 @@ void McpClientSession::init() {
             }
         }
     });
+
+    m_transport->setOnError([weakSelf](const std::string& err) {
+        if (auto self = weakSelf.lock()) {
+            self->log(LogLevel::Error, "Transport error: " + err);
+            ErrorCallback cb;
+            {
+                std::lock_guard<std::mutex> lock(self->m_mutex);
+                cb = self->m_errorCallback;
+            }
+            if (cb) {
+                cb(err);
+            }
+        }
+    });
 }
 
 bool McpClientSession::start() {
@@ -215,16 +229,21 @@ void McpClientSession::handleNotification(const json& notificationJson) {
     }
 
     NotificationCallback cb;
+    GenericNotificationCallback genCb;
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         auto it = m_notificationHandlers.find(method);
         if (it != m_notificationHandlers.end()) {
             cb = it->second;
         }
+        genCb = m_genericNotificationCallback;
     }
 
     if (cb) {
         cb(params);
+    }
+    if (genCb) {
+        genCb(method, params);
     }
 }
 
@@ -244,13 +263,21 @@ void McpClientSession::handleRequestFromServer(const json& requestJson) {
     }
 
     if (handler) {
-        json result = handler(method, params);
-        json response = {
-            {"jsonrpc", "2.0"},
-            {"id", id},
-            {"result", result}
-        };
-        m_transport->send(response.dump());
+        std::weak_ptr<McpClientSession> weakSelf = shared_from_this();
+        handler(method, params, [weakSelf, id](const json& result, const json& error) {
+            if (auto self = weakSelf.lock()) {
+                json response = {
+                    {"jsonrpc", "2.0"},
+                    {"id", id}
+                };
+                if (!error.empty()) {
+                    response["error"] = error;
+                } else {
+                    response["result"] = result;
+                }
+                self->m_transport->send(response.dump());
+            }
+        });
         return;
     }
 
@@ -1105,16 +1132,17 @@ void McpClientSession::setSamplingHandler(SamplingHandler handler) {
     }
 
     // 注册 sampling/createMessage 请求处理器（在锁外调用避免死锁）
-    registerRequestHandler("sampling/createMessage", [this](const std::string&, const json& params) -> json {
+    registerRequestHandler("sampling/createMessage", [this](const std::string&, const json& params, std::function<void(const json& result, const json& error)> cb) {
         SamplingHandler samplingCb;
         {
             std::lock_guard<std::mutex> lk(m_mutex);
             samplingCb = m_samplingHandler;
         }
         if (!samplingCb) {
-            return {{"error", {{"code", -32601}, {"message", "No sampling handler registered"}}}};
+            cb(json::object(), {{"code", -32601}, {"message", "No sampling handler registered"}});
+            return;
         }
-        return samplingCb(params);
+        samplingCb(params, cb);
     });
 }
 
@@ -1129,36 +1157,39 @@ void McpClientSession::setElicitationHandler(ElicitationHandler handler) {
     }
 
     // 注册 elicitation/create 请求处理器（在锁外调用避免死锁）
-    registerRequestHandler("elicitation/create", [this](const std::string&, const json& params) -> json {
+    registerRequestHandler("elicitation/create", [this](const std::string&, const json& params, std::function<void(const json& result, const json& error)> cb) {
         ElicitationHandler elicitCb;
         {
             std::lock_guard<std::mutex> lk(m_mutex);
             elicitCb = m_elicitationHandler;
         }
         if (!elicitCb) {
-            return {{"action", "declined"}};
+            cb({{"action", "declined"}}, json::object());
+            return;
         }
-        json res = elicitCb(params);
-        if (res.contains("action") && res["action"] == "accept") {
-            if (!res.contains("content") || res["content"].is_null()) {
-                res["content"] = json::object();
-            }
-            if (params.contains("requestedSchema") && params["requestedSchema"].contains("properties")) {
-                auto props = params["requestedSchema"]["properties"];
-                if (props.is_object()) {
-                    for (auto it = props.begin(); it != props.end(); ++it) {
-                        std::string key = it.key();
-                        auto propVal = it.value();
-                        if (propVal.is_object() && propVal.contains("default")) {
-                            if (!res["content"].contains(key)) {
-                                res["content"][key] = propVal["default"];
+        elicitCb(params, [params, cb](const json& resOut, const json& err) {
+            json res = resOut;
+            if (res.contains("action") && res["action"] == "accept") {
+                if (!res.contains("content") || res["content"].is_null()) {
+                    res["content"] = json::object();
+                }
+                if (params.contains("requestedSchema") && params["requestedSchema"].contains("properties")) {
+                    auto props = params["requestedSchema"]["properties"];
+                    if (props.is_object()) {
+                        for (auto it = props.begin(); it != props.end(); ++it) {
+                            std::string key = it.key();
+                            auto propVal = it.value();
+                            if (propVal.is_object() && propVal.contains("default")) {
+                                if (!res["content"].contains(key)) {
+                                    res["content"][key] = propVal["default"];
+                                }
                             }
                         }
                     }
                 }
             }
-        }
-        return res;
+            cb(res, err);
+        });
     });
 }
 
@@ -1173,16 +1204,19 @@ void McpClientSession::setRootsProvider(RootsProvider provider) {
     }
 
     // 注册 roots/list 请求处理器（在锁外调用避免死锁）
-    registerRequestHandler("roots/list", [this](const std::string&, const json&) -> json {
+    registerRequestHandler("roots/list", [this](const std::string&, const json&, std::function<void(const json& result, const json& error)> cb) {
         RootsProvider rootsCb;
         {
             std::lock_guard<std::mutex> lk(m_mutex);
             rootsCb = m_rootsProvider;
         }
         if (!rootsCb) {
-            return {{"roots", json::array()}};
+            cb({{"roots", json::array()}}, json::object());
+            return;
         }
-        return {{"roots", rootsCb()}};
+        rootsCb([cb](const json& result, const json& error) {
+            cb({{"roots", result}}, error);
+        });
     });
 }
 
@@ -1250,6 +1284,16 @@ void McpClientSession::sendNotificationDebounced(const std::string& method, cons
 void McpClientSession::setLogCallback(LogCallback callback) {
     std::lock_guard<std::mutex> lock(m_mutex);
     m_logCallback = std::move(callback);
+}
+
+void McpClientSession::setOnError(ErrorCallback callback) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_errorCallback = std::move(callback);
+}
+
+void McpClientSession::setNotificationCallback(GenericNotificationCallback callback) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_genericNotificationCallback = std::move(callback);
 }
 
 void McpClientSession::setProtocolVersion(const std::string& version) {

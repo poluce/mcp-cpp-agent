@@ -17,6 +17,7 @@ void test_qt_transport_post_json_with_data_field();
 void test_qt_transport_auth_retry_failure_stops_reconnect();
 void test_qt_transport_updates_token_provider_runtime();
 void test_qt_transport_post_auth_failure_blocks_message();
+void test_qt_connect_stdio_integration();
 
 int main(int argc, char* argv[]) {
     QCoreApplication app(argc, argv);
@@ -37,6 +38,7 @@ int main(int argc, char* argv[]) {
     TM_RUN_TEST(test_qt_transport_auth_retry_failure_stops_reconnect);
     TM_RUN_TEST(test_qt_transport_updates_token_provider_runtime);
     TM_RUN_TEST(test_qt_transport_post_auth_failure_blocks_message);
+    TM_RUN_TEST(test_qt_connect_stdio_integration);
 
     TmTestRunner::instance().printSummary();
     return TmTestRunner::instance().hasFailed() ? 1 : 0;

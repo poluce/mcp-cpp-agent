@@ -5,8 +5,8 @@
 #include <mcp_core/McpResource.h>
 #include <mcp_core/McpPrompt.h>
 #include <mcp_core/McpOAuthClient.h>
-#include <mcp_core/SubprocessStdioTransport.h>
 #include <mcp_qt_transport/QtHttpSseTransport.h>
+#include <mcp_qt_transport/QtProcessStdioTransport.h>
 
 #include <QObject>
 #include <QJsonDocument>
@@ -113,6 +113,7 @@ public:
 
     std::vector<McpQtTool> listTools(int timeoutMs = 10000);
     std::vector<McpQtTool> listTools(const QString& cursor, QString* nextCursor, int timeoutMs = 10000);
+    std::vector<McpQtTool> fetchAllTools(int timeoutMs = 10000);
 
     /// 调用工具（同步，对齐 TS `callTool()`）
     McpResult callTool(const QString& name, const QJsonObject& arguments, int timeoutMs = 10000);
@@ -126,10 +127,17 @@ public:
                        std::function<void(McpResult)> callback,
                        ProgressCallback onProgress = nullptr);
 
+    /// 调用工具（纯异步，绑定上下文保护生命周期，回调切换到接收方所在线程）
+    void callToolAsync(const QString& name, const QJsonObject& arguments,
+                       QObject* context,
+                       std::function<void(McpResult)> callback,
+                       ProgressCallback onProgress = nullptr);
+
     // ========== Resources（对齐 TS `listResources()`, `readResource()`, `subscribeResource()`）==========
 
     QJsonObject listResources(int timeoutMs = 10000);
     QJsonObject listResources(const QString& cursor, QString* nextCursor, int timeoutMs = 10000);
+    QJsonObject fetchAllResources(int timeoutMs = 10000);
     QJsonObject readResource(const QString& uri, int timeoutMs = 10000);
     bool subscribeResource(const QString& uri, int timeoutMs = 10000);
     bool unsubscribeResource(const QString& uri, int timeoutMs = 10000);
@@ -138,11 +146,13 @@ public:
 
     std::vector<mcp::McpResourceTemplate> listResourceTemplates(int timeoutMs = 10000);
     std::vector<mcp::McpResourceTemplate> listResourceTemplates(const QString& cursor, QString* nextCursor, int timeoutMs = 10000);
+    std::vector<mcp::McpResourceTemplate> fetchAllResourceTemplates(int timeoutMs = 10000);
 
     // ========== Prompts（对齐 TS `listPrompts()`, `getPrompt()`）==========
 
     QJsonObject listPrompts(int timeoutMs = 10000);
     QJsonObject listPrompts(const QString& cursor, QString* nextCursor, int timeoutMs = 10000);
+    QJsonObject fetchAllPrompts(int timeoutMs = 10000);
     QJsonObject getPrompt(const QString& name, const QJsonObject& arguments, int timeoutMs = 10000);
 
     // ========== 其他（对齐 TS `ping()`, `complete()`, `setLoggingLevel()`）==========
@@ -154,25 +164,35 @@ public:
 
     // ========== 双向能力（对齐 TS `setRequestHandler()`）==========
 
-    using ElicitationHandler = std::function<QJsonObject(const QJsonObject& params)>;
+    using ElicitationHandler = std::function<void(const QJsonObject& params, std::function<void(const QJsonObject& result, const QJsonObject& error)> callback)>;
     void setElicitationHandler(ElicitationHandler handler);
+    void setElicitationHandler(QObject* context, ElicitationHandler handler);
 
-    using SamplingHandler = std::function<QJsonObject(const QJsonObject& params)>;
+    using SamplingHandler = std::function<void(const QJsonObject& params, std::function<void(const QJsonObject& result, const QJsonObject& error)> callback)>;
     void setSamplingHandler(SamplingHandler handler);
+    void setSamplingHandler(QObject* context, SamplingHandler handler);
 
-    using RootsProvider = std::function<QJsonArray()>;
+    using RootsProvider = std::function<void(std::function<void(const QJsonArray& result, const QJsonObject& error)> callback)>;
     void setRootsProvider(RootsProvider provider);
+    void setRootsProvider(QObject* context, RootsProvider provider);
     void notifyRootsListChanged();
 
     // ========== 通知（对齐 TS `notification()` 等）==========
 
     void registerNotificationHandler(const QString& method, std::function<void(const QJsonObject& params)> handler);
+    void registerNotificationHandler(const QString& method, QObject* context, std::function<void(const QJsonObject& params)> handler);
     void enableNotificationDebounce(const QString& method, int debounceMs = 100);
     /// 发送任意通知给服务端
     void sendNotification(const QString& method, const QJsonObject& params);
 
     /// 发送请求（异步，对齐 TS `client.request()`）。返回 requestId，可用于 cancelRequest
     int64_t sendRequest(const QString& method, const QJsonObject& params,
+                        std::function<void(const QJsonObject& result, const QJsonObject& error)> callback,
+                        ProgressCallback onProgress = nullptr);
+
+    /// 发送请求（纯异步，绑定上下文保护生命周期，回调切换到接收方所在线程）
+    int64_t sendRequest(const QString& method, const QJsonObject& params,
+                        QObject* context,
                         std::function<void(const QJsonObject& result, const QJsonObject& error)> callback,
                         ProgressCallback onProgress = nullptr);
     /// 取消指定请求
@@ -214,6 +234,8 @@ private:
     std::shared_ptr<mcp::McpClientSession> m_session;
     std::shared_ptr<mcp::McpOAuthClient> m_oauth;
     bool m_initialized{false};
+    mutable std::map<QString, QJsonObject> m_toolSchemaCache;
+    bool validateToolSchemaLocally(const QString& name, const QJsonObject& arguments, QString* errorString) const;
 };
 
 } // namespace mcp_qt

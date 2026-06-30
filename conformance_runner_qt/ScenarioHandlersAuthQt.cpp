@@ -19,13 +19,15 @@ int runToolsCall(const RunnerConfig& c) {
     auto t = cl->listTools();
     if (t.empty()) return 1;
     QJsonObject a; a["a"] = 5; a["b"] = 3;
-    return cl->callTool("add_numbers", a).isEmpty() ? 1 : 0;
+    auto res = cl->callTool("add_numbers", a);
+    return (res.isError || res.data.isEmpty()) ? 1 : 0;
 }
 
 int runSseRetry(const RunnerConfig& c) {
     auto cl = mcp_qt::McpQtClient::connectHttp(QString::fromStdString(c.serverUrl));
     if (!cl) return 1;
-    return cl->callTool("test_reconnection", QJsonObject{}).isEmpty() ? 1 : 0;
+    auto res = cl->callTool("test_reconnection", QJsonObject{});
+    return (res.isError || res.data.isEmpty()) ? 1 : 0;
 }
 
 int runElicitationDefaults(const RunnerConfig& c) {
@@ -33,10 +35,12 @@ int runElicitationDefaults(const RunnerConfig& c) {
     if (!cl) return 1;
     QJsonObject ec; ec["form"] = QJsonObject{{"applyDefaults", true}};
     cl->registerCapability("elicitation", ec);
-    cl->setElicitationHandler([](const QJsonObject&) -> QJsonObject {
-        QJsonObject r; r["action"] = "accept"; r["content"] = QJsonObject{}; return r;
+    cl->setElicitationHandler([](const QJsonObject&, std::function<void(const QJsonObject&, const QJsonObject&)> callback) {
+        QJsonObject r; r["action"] = "accept"; r["content"] = QJsonObject{};
+        callback(r, QJsonObject{});
     });
-    return cl->callTool("test_client_elicitation_defaults", QJsonObject{}).isEmpty() ? 1 : 0;
+    auto res = cl->callTool("test_client_elicitation_defaults", QJsonObject{});
+    return (res.isError || res.data.isEmpty()) ? 1 : 0;
 }
 
 // ========== Auth 场景（HttpSseTransport / 内建完整 OAuth，235/235 已验证）==========

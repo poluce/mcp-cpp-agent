@@ -7,6 +7,7 @@
 #include <QTimer>
 #include <QUrl>
 #include <QUrlQuery>
+#include <QPointer>
 #include <sstream>
 
 namespace mcp_qt {
@@ -157,7 +158,7 @@ McpQtClient::Ptr McpQtClient::connectHttp(const QString& url,const QString& name
 }
 McpQtClient::Ptr McpQtClient::connectStdio(const QString& cmd,const QStringList& args,const QString& name,const QString& ver,int to, QString* err){
     auto c=Ptr(new McpQtClient());std::vector<std::string> a;for(const auto& x:args)a.push_back(x.toStdString());
-    auto t=std::make_shared<mcp::SubprocessStdioTransport>(cmd.toStdString(),a);
+    auto t=std::make_shared<mcp_qt::QtProcessStdioTransport>(cmd.toStdString(),a);
     if(!c->connectToTransport(t,name,ver,to,err))return nullptr;return c;
 }
 McpQtClient::Ptr McpQtClient::connectWithOAuth(const OAuthConfig& oa,const QString& name,const QString& ver,int to){
@@ -176,13 +177,31 @@ McpQtClient::Ptr McpQtClient::connectWithOAuth(const OAuthConfig& oa,const QStri
 }
 
 bool McpQtClient::connectToTransport(std::shared_ptr<mcp::IMcpTransport> t,const QString& name,const QString& ver,int to, QString* err){
-    m_session=std::make_shared<mcp::McpClientSession>(t);m_session->init();
+    m_session=std::make_shared<mcp::McpClientSession>(t);
+    m_session->init();
+    m_session->setOnError([this](const std::string& err) {
+        emit errorOccurred(QString::fromStdString(err));
+    });
+    m_session->setNotificationCallback([this](const std::string& method, const nlohmann::json& params) {
+        emit notificationReceived(QString::fromStdString(method), _qj(params));
+    });
     if(!m_session->start()){ if(err)*err="Failed to start transport"; emit errorOccurred(*err); return false; }
     return doInitialize(name,ver,to,err);
 }
 bool McpQtClient::doInitialize(const QString& name,const QString& ver,int to, QString* err){
-    nlohmann::json info;
-    if(!m_session->initializeSync(name.toStdString(),ver.toStdString(),&info,std::chrono::milliseconds(to))){ if(err)*err="Initialization timeout or failure"; emit errorOccurred(*err); return false; }
+    QEventLoop loop;
+    bool initOk = false;
+    m_session->initialize(name.toStdString(), ver.toStdString(), [&loop, &initOk](bool success, const nlohmann::json&) {
+        initOk = success;
+        loop.quit();
+    });
+    QTimer timer;
+    timer.setSingleShot(true);
+    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
+    timer.start(to);
+    loop.exec();
+
+    if(!initOk){ if(err)*err="Initialization timeout or failure"; emit errorOccurred(*err); return false; }
     m_initialized=true;emit connected();return true;
 }
 bool McpQtClient::doOAuth(const OAuthConfig& oa){
@@ -204,12 +223,152 @@ QString McpQtClient::instructions()const{return m_session?QString::fromStdString
 
 // ========== Tools ==========
 static std::vector<McpQtTool> _cvt(const std::vector<mcp::McpTool>& src) { std::vector<McpQtTool> r; for(const auto& t:src){ r.push_back({QString::fromStdString(t.name), QString::fromStdString(t.description), _qj(t.inputSchema)}); } return r; }
-std::vector<McpQtTool> McpQtClient::listTools(int to){nlohmann::json e;return m_session?_cvt(m_session->listToolsSync(std::chrono::milliseconds(to),&e)):std::vector<McpQtTool>{};}
-std::vector<McpQtTool> McpQtClient::listTools(const QString& c,QString* n,int to){nlohmann::json e;std::string ns;auto r=m_session?m_session->listToolsSync(c.toStdString(),&ns,std::chrono::milliseconds(to),&e):std::vector<mcp::McpTool>{};if(n)*n=QString::fromStdString(ns);return _cvt(r);}
-McpResult McpQtClient::callTool(const QString& nm,const QJsonObject& a,int to){nlohmann::json e;if(!m_session)return{true,{},"No session"}; auto r=m_session->callToolSync(nm.toStdString(),_nl(a),&e,std::chrono::milliseconds(to)); return {!e.empty(), _qj(r), e.empty()?QString{}:_qj(e).value("message").toString()};}
-McpResult McpQtClient::callTool(const QString& nm,const QJsonObject& a,ProgressCallback onP,int to){nlohmann::json e;if(!m_session)return{true,{},"No session"};auto pf=[onP](const nlohmann::json& pi){if(onP){float p=pi.value("progress",0.0f),t=pi.value("total",0.0f);onP(p,t,QString::fromStdString(pi.value("message","")));}};auto r=m_session->callToolSync(nm.toStdString(),_nl(a),&e,std::chrono::milliseconds(to),pf); return {!e.empty(), _qj(r), e.empty()?QString{}:_qj(e).value("message").toString()};}
+std::vector<McpQtTool> McpQtClient::listTools(int to){
+    nlohmann::json e; auto r = m_session?_cvt(m_session->listToolsSync(std::chrono::milliseconds(to),&e)):std::vector<McpQtTool>{};
+    for(const auto& t : r) m_toolSchemaCache[t.name] = t.inputSchema;
+    return r;
+}
+std::vector<McpQtTool> McpQtClient::listTools(const QString& c,QString* n,int to){
+    nlohmann::json e;std::string ns;auto r=m_session?m_session->listToolsSync(c.toStdString(),&ns,std::chrono::milliseconds(to),&e):std::vector<mcp::McpTool>{};if(n)*n=QString::fromStdString(ns);
+    auto res = _cvt(r);
+    for(const auto& t : res) m_toolSchemaCache[t.name] = t.inputSchema;
+    return res;
+}
+std::vector<McpQtTool> McpQtClient::fetchAllTools(int to) {
+    std::vector<McpQtTool> all; QString c;
+    do { QString nc; auto r=listTools(c,&nc,to); all.insert(all.end(),r.begin(),r.end()); c=nc; } while(!c.isEmpty());
+    return all;
+}
+static bool validateProperty(const QJsonValue& val, const QJsonObject& propSchema, QString* errorString) {
+    // 1. Check type
+    if (propSchema.contains("type") && propSchema["type"].isString()) {
+        QString expectedType = propSchema["type"].toString();
+        if (expectedType == "string" && !val.isString()) {
+            if (errorString) *errorString = "Expected string";
+            return false;
+        }
+        if (expectedType == "number" && !val.isDouble()) {
+            if (errorString) *errorString = "Expected number";
+            return false;
+        }
+        if (expectedType == "integer" && (!val.isDouble() || val.toDouble() != static_cast<int>(val.toDouble()))) {
+            if (errorString) *errorString = "Expected integer";
+            return false;
+        }
+        if (expectedType == "boolean" && !val.isBool()) {
+            if (errorString) *errorString = "Expected boolean";
+            return false;
+        }
+        if (expectedType == "array" && !val.isArray()) {
+            if (errorString) *errorString = "Expected array";
+            return false;
+        }
+        if (expectedType == "object" && !val.isObject()) {
+            if (errorString) *errorString = "Expected object";
+            return false;
+        }
+    }
+
+    // 2. Check enum
+    if (propSchema.contains("enum") && propSchema["enum"].isArray()) {
+        QJsonArray enumVals = propSchema["enum"].toArray();
+        bool found = false;
+        for (const auto& ev : enumVals) {
+            if (ev == val) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            if (errorString) *errorString = "Value not in enum list";
+            return false;
+        }
+    }
+
+    // 3. Check minimum / maximum
+    if (val.isDouble()) {
+        double num = val.toDouble();
+        if (propSchema.contains("minimum") && propSchema["minimum"].isDouble()) {
+            if (num < propSchema["minimum"].toDouble()) {
+                if (errorString) *errorString = QString("Value %1 is less than minimum %2").arg(num).arg(propSchema["minimum"].toDouble());
+                return false;
+            }
+        }
+        if (propSchema.contains("maximum") && propSchema["maximum"].isDouble()) {
+            if (num > propSchema["maximum"].toDouble()) {
+                if (errorString) *errorString = QString("Value %1 is greater than maximum %2").arg(num).arg(propSchema["maximum"].toDouble());
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+bool McpQtClient::validateToolSchemaLocally(const QString& name, const QJsonObject& arguments, QString* errorString) const {
+    auto it = m_toolSchemaCache.find(name);
+    if (it == m_toolSchemaCache.end()) return true;
+    QJsonObject schema = it->second;
+    
+    // 1. Validate required fields
+    if (schema.contains("required") && schema["required"].isArray()) {
+        QJsonArray required = schema["required"].toArray();
+        for (const auto& r : required) {
+            QString reqField = r.toString();
+            if (!arguments.contains(reqField)) {
+                if (errorString) *errorString = QString("Validation Error: Missing required argument '%1'").arg(reqField);
+                return false;
+            }
+        }
+    }
+
+    // 2. Validate properties
+    if (schema.contains("properties") && schema["properties"].isObject()) {
+        QJsonObject properties = schema["properties"].toObject();
+        for (auto propIt = arguments.begin(); propIt != arguments.end(); ++propIt) {
+            QString key = propIt.key();
+            if (properties.contains(key) && properties[key].isObject()) {
+                QJsonObject propSchema = properties[key].toObject();
+                QString valError;
+                if (!validateProperty(propIt.value(), propSchema, &valError)) {
+                    if (errorString) *errorString = QString("Validation Error on '%1': %2").arg(key).arg(valError);
+                    return false;
+                }
+            } else {
+                // Check additionalProperties
+                if (schema.contains("additionalProperties")) {
+                    QJsonValue addProp = schema["additionalProperties"];
+                    if (addProp.isBool() && !addProp.toBool()) {
+                        if (errorString) *errorString = QString("Validation Error: Property '%1' is not allowed by additionalProperties=false").arg(key);
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    return true;
+}
+McpResult McpQtClient::callTool(const QString& nm,const QJsonObject& a,int to){
+    QString errStr; if(!validateToolSchemaLocally(nm, a, &errStr)) return {true, {}, errStr};
+    nlohmann::json e;if(!m_session)return{true,{},"No session"}; auto r=m_session->callToolSync(nm.toStdString(),_nl(a),&e,std::chrono::milliseconds(to)); return {!e.empty(), _qj(r), e.empty()?QString{}:_qj(e).value("message").toString()};}
+McpResult McpQtClient::callTool(const QString& nm,const QJsonObject& a,ProgressCallback onP,int to){
+    QString errStr; if(!validateToolSchemaLocally(nm, a, &errStr)) return {true, {}, errStr};
+    nlohmann::json e;if(!m_session)return{true,{},"No session"};auto pf=[onP](const nlohmann::json& pi){if(onP){float p=pi.value("progress",0.0f),t=pi.value("total",0.0f);onP(p,t,QString::fromStdString(pi.value("message","")));}};auto r=m_session->callToolSync(nm.toStdString(),_nl(a),&e,std::chrono::milliseconds(to),pf); return {!e.empty(), _qj(r), e.empty()?QString{}:_qj(e).value("message").toString()};}
 void McpQtClient::callToolAsync(const QString& nm, const QJsonObject& a, std::function<void(McpResult)> cb, ProgressCallback onP) {
-    sendRequest("tools/call", QJsonObject{{"name",nm},{"arguments",a}}, [cb](const QJsonObject& r, const QJsonObject& e) {
+    callToolAsync(nm, a, this, cb, onP);
+}
+void McpQtClient::callToolAsync(const QString& nm, const QJsonObject& a, QObject* ctx, std::function<void(McpResult)> cb, ProgressCallback onP) {
+    QString errStr;
+    if(!validateToolSchemaLocally(nm, a, &errStr)) {
+        if(ctx) {
+            QPointer<QObject> pCtx(ctx);
+            if (pCtx) {
+                QMetaObject::invokeMethod(pCtx.data(), [cb, errStr](){ cb({true, {}, errStr}); }, Qt::QueuedConnection);
+            }
+        }
+        else { cb({true, {}, errStr}); }
+        return;
+    }
+    sendRequest("tools/call", QJsonObject{{"name",nm},{"arguments",a}}, ctx, [cb](const QJsonObject& r, const QJsonObject& e) {
         cb({!e.isEmpty(), r, e.isEmpty()?QString{}:e.value("message").toString()});
     }, onP);
 }
@@ -217,6 +376,11 @@ void McpQtClient::callToolAsync(const QString& nm, const QJsonObject& a, std::fu
 // ========== Resources ==========
 QJsonObject McpQtClient::listResources(int to){nlohmann::json e;return m_session?_qj(m_session->listResourcesSync(std::chrono::milliseconds(to),&e)):QJsonObject{};}
 QJsonObject McpQtClient::listResources(const QString& c,QString* n,int to){nlohmann::json e;std::string ns;auto r=m_session?_qj(m_session->listResourcesSync(c.toStdString(),&ns,std::chrono::milliseconds(to),&e)):QJsonObject{};if(n)*n=QString::fromStdString(ns);return r;}
+QJsonObject McpQtClient::fetchAllResources(int to) {
+    QJsonObject all; QJsonArray arr; QString c;
+    do { QString nc; auto r=listResources(c,&nc,to); QJsonArray ta=r.value("resources").toArray(); for(const auto& x:ta) arr.append(x); c=nc; } while(!c.isEmpty());
+    all["resources"] = arr; return all;
+}
 QJsonObject McpQtClient::readResource(const QString& u,int to){nlohmann::json e;return m_session?_qj(m_session->readResourceSync(u.toStdString(),&e,std::chrono::milliseconds(to))):QJsonObject{};}
 bool McpQtClient::subscribeResource(const QString& u,int to){nlohmann::json e;return m_session?m_session->subscribeResourceSync(u.toStdString(),&e,std::chrono::milliseconds(to)):false;}
 bool McpQtClient::unsubscribeResource(const QString& u,int to){nlohmann::json e;return m_session?m_session->unsubscribeResourceSync(u.toStdString(),&e,std::chrono::milliseconds(to)):false;}
@@ -224,10 +388,20 @@ bool McpQtClient::unsubscribeResource(const QString& u,int to){nlohmann::json e;
 // ========== Resource Templates ==========
 std::vector<mcp::McpResourceTemplate> McpQtClient::listResourceTemplates(int to){nlohmann::json e;return m_session?m_session->listResourceTemplatesSync(std::chrono::milliseconds(to),&e):std::vector<mcp::McpResourceTemplate>{};}
 std::vector<mcp::McpResourceTemplate> McpQtClient::listResourceTemplates(const QString& c,QString* n,int to){nlohmann::json e;std::string ns;auto r=m_session?m_session->listResourceTemplatesSync(c.toStdString(),&ns,std::chrono::milliseconds(to),&e):std::vector<mcp::McpResourceTemplate>{};if(n)*n=QString::fromStdString(ns);return r;}
+std::vector<mcp::McpResourceTemplate> McpQtClient::fetchAllResourceTemplates(int to) {
+    std::vector<mcp::McpResourceTemplate> all; QString c;
+    do { QString nc; auto r=listResourceTemplates(c,&nc,to); all.insert(all.end(),r.begin(),r.end()); c=nc; } while(!c.isEmpty());
+    return all;
+}
 
 // ========== Prompts ==========
 QJsonObject McpQtClient::listPrompts(int to){nlohmann::json e;return m_session?_qj(m_session->listPromptsSync(std::chrono::milliseconds(to),&e)):QJsonObject{};}
 QJsonObject McpQtClient::listPrompts(const QString& c,QString* n,int to){nlohmann::json e;std::string ns;auto r=m_session?_qj(m_session->listPromptsSync(c.toStdString(),&ns,std::chrono::milliseconds(to),&e)):QJsonObject{};if(n)*n=QString::fromStdString(ns);return r;}
+QJsonObject McpQtClient::fetchAllPrompts(int to) {
+    QJsonObject all; QJsonArray arr; QString c;
+    do { QString nc; auto r=listPrompts(c,&nc,to); QJsonArray ta=r.value("prompts").toArray(); for(const auto& x:ta) arr.append(x); c=nc; } while(!c.isEmpty());
+    all["prompts"] = arr; return all;
+}
 QJsonObject McpQtClient::getPrompt(const QString& nm,const QJsonObject& a,int to){nlohmann::json e;return m_session?_qj(m_session->getPromptSync(nm.toStdString(),_nl(a),&e,std::chrono::milliseconds(to))):QJsonObject{};}
 
 // ========== Etc ==========
@@ -236,20 +410,130 @@ QJsonObject McpQtClient::complete(const QJsonObject& rf,const QJsonObject& ag,in
 bool McpQtClient::setLoggingLevel(const QString& lv,int to){if(!m_session)return false;nlohmann::json e;m_session->callToolSync("logging/setLevel",_nl(QJsonObject{{"level",lv}}),&e,std::chrono::milliseconds(to));return e.empty();}
 
 // ========== 双向能力 ==========
-void McpQtClient::setElicitationHandler(ElicitationHandler h){if(m_session)m_session->setElicitationHandler([h](const nlohmann::json&p)->nlohmann::json{return _nl(h(_qj(p)));});}
-void McpQtClient::setSamplingHandler(SamplingHandler h){if(m_session)m_session->setSamplingHandler([h](const nlohmann::json&p)->nlohmann::json{return _nl(h(_qj(p)));});}
-void McpQtClient::setRootsProvider(RootsProvider p){if(m_session)m_session->setRootsProvider([p]()->nlohmann::json{QJsonArray a=p();return _nl(QJsonObject{{"roots",a}});});}
+void McpQtClient::setElicitationHandler(ElicitationHandler h){
+    setElicitationHandler(this, h);
+}
+void McpQtClient::setElicitationHandler(QObject* ctx, ElicitationHandler h){
+    if(!m_session) return;
+    bool hasCtx = (ctx != nullptr);
+    QPointer<QObject> pCtx(ctx);
+    m_session->setElicitationHandler([h, pCtx, hasCtx](const nlohmann::json& p, std::function<void(const nlohmann::json&, const nlohmann::json&)> cb){
+        QJsonObject qp = _qj(p);
+        auto localCb = [cb](const QJsonObject& res, const QJsonObject& err) {
+            cb(_nl(res), _nl(err));
+        };
+        if (hasCtx) {
+            if (pCtx) {
+                QMetaObject::invokeMethod(pCtx.data(), [h, qp, localCb]() {
+                    h(qp, localCb);
+                }, Qt::QueuedConnection);
+            } else {
+                cb(nlohmann::json::object(), {{"code", -32000}, {"message", "Client context destroyed"}});
+            }
+        } else {
+            h(qp, localCb);
+        }
+    });
+}
+void McpQtClient::setSamplingHandler(SamplingHandler h){
+    setSamplingHandler(this, h);
+}
+void McpQtClient::setSamplingHandler(QObject* ctx, SamplingHandler h){
+    if(!m_session) return;
+    bool hasCtx = (ctx != nullptr);
+    QPointer<QObject> pCtx(ctx);
+    m_session->setSamplingHandler([h, pCtx, hasCtx](const nlohmann::json& p, std::function<void(const nlohmann::json&, const nlohmann::json&)> cb){
+        QJsonObject qp = _qj(p);
+        auto localCb = [cb](const QJsonObject& res, const QJsonObject& err) {
+            cb(_nl(res), _nl(err));
+        };
+        if (hasCtx) {
+            if (pCtx) {
+                QMetaObject::invokeMethod(pCtx.data(), [h, qp, localCb]() {
+                    h(qp, localCb);
+                }, Qt::QueuedConnection);
+            } else {
+                cb(nlohmann::json::object(), {{"code", -32000}, {"message", "Client context destroyed"}});
+            }
+        } else {
+            h(qp, localCb);
+        }
+    });
+}
+void McpQtClient::setRootsProvider(RootsProvider p){
+    setRootsProvider(this, p);
+}
+void McpQtClient::setRootsProvider(QObject* ctx, RootsProvider p){
+    if(!m_session) return;
+    bool hasCtx = (ctx != nullptr);
+    QPointer<QObject> pCtx(ctx);
+    m_session->setRootsProvider([p, pCtx, hasCtx](std::function<void(const nlohmann::json&, const nlohmann::json&)> cb){
+        auto localCb = [cb](const QJsonArray& res, const QJsonObject& err) {
+            cb(_nl(QJsonObject{{"roots", res}})["roots"], _nl(err));
+        };
+        if (hasCtx) {
+            if (pCtx) {
+                QMetaObject::invokeMethod(pCtx.data(), [p, localCb]() {
+                    p(localCb);
+                }, Qt::QueuedConnection);
+            } else {
+                cb(nlohmann::json::array(), {{"code", -32000}, {"message", "Client context destroyed"}});
+            }
+        } else {
+            p(localCb);
+        }
+    });
+}
 void McpQtClient::notifyRootsListChanged(){if(m_session)m_session->notifyRootsListChanged();}
 
 // ========== 通知 ==========
-void McpQtClient::registerNotificationHandler(const QString& m,std::function<void(const QJsonObject&)> h){if(m_session)m_session->registerNotificationHandler(m.toStdString(),[h](const nlohmann::json&p){h(_qj(p));});}
+void McpQtClient::registerNotificationHandler(const QString& m,std::function<void(const QJsonObject&)> h){
+    registerNotificationHandler(m, this, h);
+}
+void McpQtClient::registerNotificationHandler(const QString& m, QObject* ctx, std::function<void(const QJsonObject&)> h){
+    if(!m_session) return;
+    bool hasCtx = (ctx != nullptr);
+    QPointer<QObject> pCtx(ctx);
+    m_session->registerNotificationHandler(m.toStdString(), [h, pCtx, hasCtx](const nlohmann::json& p) {
+        QJsonObject qp = _qj(p);
+        if (hasCtx) {
+            if (pCtx) {
+                QMetaObject::invokeMethod(pCtx.data(), [h, qp]() {
+                    h(qp);
+                }, Qt::QueuedConnection);
+            }
+        } else {
+            h(qp);
+        }
+    });
+}
 void McpQtClient::enableNotificationDebounce(const QString& m,int ms){if(m_session)m_session->enableNotificationDebounce(m.toStdString(),std::chrono::milliseconds(ms));}
 void McpQtClient::sendNotification(const QString& m,const QJsonObject& p){if(m_session)m_session->sendNotification(m.toStdString(),_nl(p));}
 
 // ========== 异步 ==========
 int64_t McpQtClient::sendRequest(const QString& m,const QJsonObject& p,std::function<void(const QJsonObject&,const QJsonObject&)> cb,ProgressCallback onP){
-    if(!m_session)return-1;auto pf=onP?std::function<void(const nlohmann::json&)>([onP](const nlohmann::json& pi){float p=pi.value("progress",0.0f),t=pi.value("total",0.0f);onP(p,t,QString::fromStdString(pi.value("message","")));}):nullptr;
-    return m_session->sendRequest(m.toStdString(),_nl(p),[cb](const nlohmann::json& r,const nlohmann::json& e){cb(_qj(r),_qj(e));},pf);
+    return sendRequest(m, p, this, cb, onP);
+}
+
+int64_t McpQtClient::sendRequest(const QString& m,const QJsonObject& p, QObject* ctx, std::function<void(const QJsonObject&,const QJsonObject&)> cb,ProgressCallback onP){
+    if(!m_session)return-1;
+    bool hasCtx = (ctx != nullptr);
+    QPointer<QObject> pCtx(ctx);
+    auto pf=onP?std::function<void(const nlohmann::json&)>([onP, pCtx, hasCtx](const nlohmann::json& pi){
+        float pt=pi.value("progress",0.0f),tt=pi.value("total",0.0f);
+        QString msg=QString::fromStdString(pi.value("message",""));
+        if(hasCtx) {
+            if(pCtx) { QMetaObject::invokeMethod(pCtx.data(), [onP,pt,tt,msg](){ onP(pt,tt,msg); }, Qt::QueuedConnection); }
+        }
+        else { onP(pt,tt,msg); }
+    }):nullptr;
+    return m_session->sendRequest(m.toStdString(),_nl(p),[cb, pCtx, hasCtx](const nlohmann::json& r,const nlohmann::json& e){
+        QJsonObject qr=_qj(r), qe=_qj(e);
+        if(hasCtx) {
+            if(pCtx) { QMetaObject::invokeMethod(pCtx.data(), [cb,qr,qe](){ cb(qr,qe); }, Qt::QueuedConnection); }
+        }
+        else { cb(qr,qe); }
+    },pf);
 }
 void McpQtClient::cancelRequest(int64_t id){if(m_session)m_session->cancelRequest(id);}
 

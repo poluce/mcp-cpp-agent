@@ -13,10 +13,12 @@ target_include_directories(tests_qt PRIVATE
     ${CMAKE_SOURCE_DIR}
     ${CMAKE_SOURCE_DIR}/mcp_qt_transport/include
     ${CMAKE_SOURCE_DIR}/mcp_qt_transport/src
+    ${CMAKE_SOURCE_DIR}/mcp_qt_client/include
 )
 
 target_link_libraries(tests_qt PRIVATE
     mcp_qt_transport
+    mcp_qt_client
     Qt6::Core
     Qt6::Network
 )

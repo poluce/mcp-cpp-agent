@@ -2,7 +2,9 @@ set(CMAKE_AUTOMOC ON)
 
 add_library(mcp_qt_transport STATIC
     include/mcp_qt_transport/QtHttpSseTransport.h
+    include/mcp_qt_transport/QtProcessStdioTransport.h
     src/QtHttpSseTransport.cpp
+    src/QtProcessStdioTransport.cpp
     src/QtHttpSseWorker.h
     src/QtHttpSseWorker.cpp
     src/QtSseParser.h
