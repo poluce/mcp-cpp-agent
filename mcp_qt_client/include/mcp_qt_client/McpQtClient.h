@@ -12,6 +12,7 @@
 #include <mcp_qt_client/McpResourceSubscriptionRouter.h>
 #include <mcp_qt_client/McpToolsModel.h>
 #include <mcp_core/McpReconnectPolicy.h>
+#include <nlohmann/json.hpp>
 
 #include <QObject>
 #include <QPointer>
@@ -306,6 +307,7 @@ public:
     // ========== 能力（对齐 TS `registerCapabilities()`）==========
 
     void registerCapability(const QString& name, const QJsonObject& config);
+    void setClientCapabilities(const nlohmann::json& caps);
 
     // ========== 生命周期与重连（对齐 TS `close()`）==========
 
@@ -443,6 +445,11 @@ private:
     void refreshToolsAfterRecovery();
     void replayQueuedRequests();
     bool isReplayableMethod(const QString& method) const;
+
+    nlohmann::json m_clientCapabilities;
+
+    template <typename Initiator>
+    bool runSyncWithTimeout(Initiator&& initiator, int timeoutMs);
 };
 
 } // namespace mcp_qt

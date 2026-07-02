@@ -259,16 +259,42 @@ bool McpQtClient::connectToTransportAndWait(std::shared_ptr<mcp::IMcpTransport> 
     return doInitializeAndWait(name,ver,to,err);
 }
 
+void McpQtClient::setClientCapabilities(const nlohmann::json& caps) {
+    m_clientCapabilities = caps;
+}
+
+template <typename Initiator>
+bool McpQtClient::runSyncWithTimeout(Initiator&& initiator, int timeoutMs) {
+    QEventLoop loop;
+    QTimer timer;
+    timer.setSingleShot(true);
+    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
+    
+    bool completed = false;
+    initiator([&completed, &loop]() {
+        completed = true;
+        loop.quit();
+    });
+    
+    if (timeoutMs > 0) {
+        timer.start(timeoutMs);
+    }
+    loop.exec();
+    return completed;
+}
+
 void McpQtClient::setupTransportCommon(std::shared_ptr<mcp::IMcpTransport> t) {
     m_session = std::make_shared<mcp::McpClientSession>(t);
     m_session->init();
     
-    // 默认注册 tools、resources、prompts 的客户端 capabilities 能力支持
-    nlohmann::json caps = {
-        {"tools", {{"listChanged", true}}},
-        {"resources", {{"subscribe", true}, {"listChanged", true}}},
-        {"prompts", {{"listChanged", true}}}
-    };
+    nlohmann::json caps = m_clientCapabilities;
+    if (caps.is_null() || caps.empty()) {
+        caps = {
+            {"tools", {{"listChanged", true}}},
+            {"resources", {{"subscribe", true}, {"listChanged", true}}},
+            {"prompts", {{"listChanged", true}}}
+        };
+    }
     m_session->registerCapabilities(caps);
 
     if (m_trafficLogger) {
@@ -332,19 +358,15 @@ void McpQtClient::setupTransportCommon(std::shared_ptr<mcp::IMcpTransport> t) {
     m_pendingCapabilities.clear();
 }
 bool McpQtClient::doInitializeAndWait(const QString& name,const QString& ver,int to, QString* err){
-    auto loop = std::make_shared<QEventLoop>();
-    auto initOk = std::make_shared<bool>(false);
-    m_session->initialize(name.toStdString(), ver.toStdString(), [loop, initOk](bool success, const nlohmann::json&) {
-        *initOk = success;
-        loop->quit();
-    });
-    QTimer timer;
-    timer.setSingleShot(true);
-    QObject::connect(&timer, &QTimer::timeout, loop.get(), &QEventLoop::quit);
-    timer.start(to);
-    loop->exec();
+    bool initOk = false;
+    bool ok = runSyncWithTimeout([&](const std::function<void()>& quit) {
+        m_session->initialize(name.toStdString(), ver.toStdString(), [&](bool success, const nlohmann::json&) {
+            initOk = success;
+            quit();
+        });
+    }, to);
 
-    if(!*initOk){ if(err)*err="Initialization timeout or failure"; emit errorOccurred(*err); return false; }
+    if(!ok || !initOk){ if(err)*err="Initialization timeout or failure"; emit errorOccurred(*err); return false; }
     m_initialized=true;emit connected();return true;
 }
 bool McpQtClient::doOAuth(const OAuthConfig& oa){
@@ -373,16 +395,12 @@ static std::vector<McpQtTool> _cvt(const std::vector<mcp::McpTool>& src) { std::
 std::vector<McpQtTool> McpQtClient::listTools(int to){
     if (!m_session) return {};
     std::vector<McpQtTool> result;
-    QEventLoop loop;
-    QTimer timer;
-    timer.setSingleShot(true);
-    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    m_session->listTools("", [&](const std::vector<mcp::McpTool>& tools, const std::string& nextCursor, const nlohmann::json& error) {
-        result = _cvt(tools);
-        loop.quit();
-    });
-    timer.start(to);
-    loop.exec();
+    runSyncWithTimeout([&](const std::function<void()>& quit) {
+        m_session->listTools("", [&](const std::vector<mcp::McpTool>& tools, const std::string& nextCursor, const nlohmann::json& error) {
+            result = _cvt(tools);
+            quit();
+        });
+    }, to);
     for(const auto& t : result) m_toolSchemaCache[t.name] = t.inputSchema;
     return result;
 }
@@ -390,17 +408,13 @@ std::vector<McpQtTool> McpQtClient::listTools(const QString& c,QString* n,int to
     if (!m_session) return {};
     std::vector<mcp::McpTool> result;
     std::string ns;
-    QEventLoop loop;
-    QTimer timer;
-    timer.setSingleShot(true);
-    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    m_session->listTools(c.toStdString(), [&](const std::vector<mcp::McpTool>& tools, const std::string& nextCursor, const nlohmann::json& error) {
-        result = tools;
-        ns = nextCursor;
-        loop.quit();
-    });
-    timer.start(to);
-    loop.exec();
+    runSyncWithTimeout([&](const std::function<void()>& quit) {
+        m_session->listTools(c.toStdString(), [&](const std::vector<mcp::McpTool>& tools, const std::string& nextCursor, const nlohmann::json& error) {
+            result = tools;
+            ns = nextCursor;
+            quit();
+        });
+    }, to);
     if (n) *n = QString::fromStdString(ns);
     auto res = _cvt(result);
     for(const auto& t : res) m_toolSchemaCache[t.name] = t.inputSchema;
@@ -551,18 +565,14 @@ McpResult McpQtClient::callTool(const QString& nm,const QJsonObject& a,int to){
     QString errStr; if(!validateToolSchemaLocally(nm, a, &errStr)) return {true, {}, errStr};
     if(!m_session) return {true, {}, "No session"};
     nlohmann::json resultData, errorData;
-    QEventLoop loop;
-    QTimer timer;
-    timer.setSingleShot(true);
-    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    m_session->callTool(nm.toStdString(), _nl(a), [&](const nlohmann::json& result, const nlohmann::json& error) {
-        resultData = result;
-        errorData = error;
-        loop.quit();
-    });
-    timer.start(to);
-    loop.exec();
-    if (resultData.empty() && errorData.empty()) {
+    bool ok = runSyncWithTimeout([&](const std::function<void()>& quit) {
+        m_session->callTool(nm.toStdString(), _nl(a), [&](const nlohmann::json& result, const nlohmann::json& error) {
+            resultData = result;
+            errorData = error;
+            quit();
+        });
+    }, to);
+    if (!ok) {
         return {true, {}, "Timeout"};
     }
     return {!errorData.empty(), _qj(resultData), errorData.empty() ? QString() : _qj(errorData).value("message").toString()};
@@ -571,24 +581,20 @@ McpResult McpQtClient::callTool(const QString& nm,const QJsonObject& a,ProgressC
     QString errStr; if(!validateToolSchemaLocally(nm, a, &errStr)) return {true, {}, errStr};
     if(!m_session) return {true, {}, "No session"};
     nlohmann::json resultData, errorData;
-    QEventLoop loop;
-    QTimer timer;
-    timer.setSingleShot(true);
-    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
     auto pf = [onP](const nlohmann::json& pi) {
         if (onP) {
             float p = pi.value("progress", 0.0f), t = pi.value("total", 0.0f);
             onP(p, t, QString::fromStdString(pi.value("message", "")));
         }
     };
-    m_session->callTool(nm.toStdString(), _nl(a), [&](const nlohmann::json& result, const nlohmann::json& error) {
-        resultData = result;
-        errorData = error;
-        loop.quit();
-    }, pf);
-    timer.start(to);
-    loop.exec();
-    if (resultData.empty() && errorData.empty()) {
+    bool ok = runSyncWithTimeout([&](const std::function<void()>& quit) {
+        m_session->callTool(nm.toStdString(), _nl(a), [&](const nlohmann::json& result, const nlohmann::json& error) {
+            resultData = result;
+            errorData = error;
+            quit();
+        }, pf);
+    }, to);
+    if (!ok) {
         return {true, {}, "Timeout"};
     }
     return {!errorData.empty(), _qj(resultData), errorData.empty() ? QString() : _qj(errorData).value("message").toString()};
@@ -683,33 +689,25 @@ void McpQtClient::callToolTypedAsync(const QString& nm, const QJsonObject& a,
 QJsonObject McpQtClient::listResources(int to){
     if (!m_session) return {};
     nlohmann::json resultData;
-    QEventLoop loop;
-    QTimer timer;
-    timer.setSingleShot(true);
-    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    m_session->listResources("", [&](const nlohmann::json& result, const std::string& nextCursor, const nlohmann::json& error) {
-        resultData = result;
-        loop.quit();
-    });
-    timer.start(to);
-    loop.exec();
+    runSyncWithTimeout([&](const std::function<void()>& quit) {
+        m_session->listResources("", [&](const nlohmann::json& result, const std::string& nextCursor, const nlohmann::json& error) {
+            resultData = result;
+            quit();
+        });
+    }, to);
     return _qj(resultData);
 }
 QJsonObject McpQtClient::listResources(const QString& c,QString* n,int to){
     if (!m_session) return {};
     nlohmann::json resultData;
     std::string ns;
-    QEventLoop loop;
-    QTimer timer;
-    timer.setSingleShot(true);
-    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    m_session->listResources(c.toStdString(), [&](const nlohmann::json& result, const std::string& nextCursor, const nlohmann::json& error) {
-        resultData = result;
-        ns = nextCursor;
-        loop.quit();
-    });
-    timer.start(to);
-    loop.exec();
+    runSyncWithTimeout([&](const std::function<void()>& quit) {
+        m_session->listResources(c.toStdString(), [&](const nlohmann::json& result, const std::string& nextCursor, const nlohmann::json& error) {
+            resultData = result;
+            ns = nextCursor;
+            quit();
+        });
+    }, to);
     if (n) *n = QString::fromStdString(ns);
     return _qj(resultData);
 }
@@ -738,16 +736,12 @@ void McpQtClient::listResourcesAsync(const QString& cursor, std::function<void(c
 QJsonObject McpQtClient::readResource(const QString& u,int to){
     if (!m_session) return {};
     nlohmann::json resultData;
-    QEventLoop loop;
-    QTimer timer;
-    timer.setSingleShot(true);
-    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    m_session->readResource(u.toStdString(), [&](const nlohmann::json& result, const nlohmann::json& error) {
-        resultData = result;
-        loop.quit();
-    });
-    timer.start(to);
-    loop.exec();
+    runSyncWithTimeout([&](const std::function<void()>& quit) {
+        m_session->readResource(u.toStdString(), [&](const nlohmann::json& result, const nlohmann::json& error) {
+            resultData = result;
+            quit();
+        });
+    }, to);
     return _qj(resultData);
 }
 
@@ -768,16 +762,12 @@ void McpQtClient::readResourceAsync(const QString& uri, std::function<void(const
 bool McpQtClient::subscribeResource(const QString& u,int to){
     if(!m_session) return false;
     bool ok = false;
-    QEventLoop loop;
-    QTimer timer;
-    timer.setSingleShot(true);
-    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    m_session->subscribeResource(u.toStdString(), [&](bool success, const nlohmann::json& error) {
-        ok = success;
-        loop.quit();
-    });
-    timer.start(to);
-    loop.exec();
+    runSyncWithTimeout([&](const std::function<void()>& quit) {
+        m_session->subscribeResource(u.toStdString(), [&](bool success, const nlohmann::json& error) {
+            ok = success;
+            quit();
+        });
+    }, to);
     if (ok) {
         m_resourceRouter.subscribe(u, nullptr);
     }
@@ -803,16 +793,12 @@ bool McpQtClient::unsubscribeResource(const QString& u,int to){
     m_resourceRouter.unsubscribeAll(u);
     if(!m_session) return false;
     bool ok = false;
-    QEventLoop loop;
-    QTimer timer;
-    timer.setSingleShot(true);
-    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    m_session->unsubscribeResource(u.toStdString(), [&](bool success, const nlohmann::json& error) {
-        ok = success;
-        loop.quit();
-    });
-    timer.start(to);
-    loop.exec();
+    runSyncWithTimeout([&](const std::function<void()>& quit) {
+        m_session->unsubscribeResource(u.toStdString(), [&](bool success, const nlohmann::json& error) {
+            ok = success;
+            quit();
+        });
+    }, to);
     return ok;
 }
 
@@ -834,16 +820,12 @@ int McpQtClient::subscribeResource(const QString& uri,
                                     int to) {
     if (!m_session) return -1;
     bool ok = false;
-    QEventLoop loop;
-    QTimer timer;
-    timer.setSingleShot(true);
-    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    m_session->subscribeResource(uri.toStdString(), [&](bool success, const nlohmann::json& error) {
-        ok = success;
-        loop.quit();
-    });
-    timer.start(to);
-    loop.exec();
+    runSyncWithTimeout([&](const std::function<void()>& quit) {
+        m_session->subscribeResource(uri.toStdString(), [&](bool success, const nlohmann::json& error) {
+            ok = success;
+            quit();
+        });
+    }, to);
     if (!ok) return -1;
     return m_resourceRouter.subscribe(uri, std::move(callback));
 }
@@ -873,16 +855,12 @@ bool McpQtClient::unsubscribeResourceByToken(const QString& uri, int routerToken
     if (!m_resourceRouter.hasSubscribers(uri)) {
         if(!m_session) return false;
         bool ok = false;
-        QEventLoop loop;
-        QTimer timer;
-        timer.setSingleShot(true);
-        QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
-        m_session->unsubscribeResource(uri.toStdString(), [&](bool success, const nlohmann::json& error) {
-            ok = success;
-            loop.quit();
-        });
-        timer.start(to);
-        loop.exec();
+        runSyncWithTimeout([&](const std::function<void()>& quit) {
+            m_session->unsubscribeResource(uri.toStdString(), [&](bool success, const nlohmann::json& error) {
+                ok = success;
+                quit();
+            });
+        }, to);
         return ok;
     }
     return true;
@@ -911,33 +889,25 @@ void McpQtClient::unsubscribeResourceByTokenAsync(const QString& uri, int router
 std::vector<mcp::McpResourceTemplate> McpQtClient::listResourceTemplates(int to){
     if (!m_session) return {};
     std::vector<mcp::McpResourceTemplate> resultData;
-    QEventLoop loop;
-    QTimer timer;
-    timer.setSingleShot(true);
-    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    m_session->listResourceTemplates("", [&](const std::vector<mcp::McpResourceTemplate>& templates, const std::string& nextCursor, const nlohmann::json& error) {
-        resultData = templates;
-        loop.quit();
-    });
-    timer.start(to);
-    loop.exec();
+    runSyncWithTimeout([&](const std::function<void()>& quit) {
+        m_session->listResourceTemplates("", [&](const std::vector<mcp::McpResourceTemplate>& templates, const std::string& nextCursor, const nlohmann::json& error) {
+            resultData = templates;
+            quit();
+        });
+    }, to);
     return resultData;
 }
 std::vector<mcp::McpResourceTemplate> McpQtClient::listResourceTemplates(const QString& c,QString* n,int to){
     if (!m_session) return {};
     std::vector<mcp::McpResourceTemplate> resultData;
     std::string ns;
-    QEventLoop loop;
-    QTimer timer;
-    timer.setSingleShot(true);
-    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    m_session->listResourceTemplates(c.toStdString(), [&](const std::vector<mcp::McpResourceTemplate>& templates, const std::string& nextCursor, const nlohmann::json& error) {
-        resultData = templates;
-        ns = nextCursor;
-        loop.quit();
-    });
-    timer.start(to);
-    loop.exec();
+    runSyncWithTimeout([&](const std::function<void()>& quit) {
+        m_session->listResourceTemplates(c.toStdString(), [&](const std::vector<mcp::McpResourceTemplate>& templates, const std::string& nextCursor, const nlohmann::json& error) {
+            resultData = templates;
+            ns = nextCursor;
+            quit();
+        });
+    }, to);
     if (n) *n = QString::fromStdString(ns);
     return resultData;
 }
@@ -973,33 +943,25 @@ std::unique_ptr<McpResourceTemplatesModel> McpQtClient::createResourceTemplatesM
 QJsonObject McpQtClient::listPrompts(int to){
     if (!m_session) return {};
     nlohmann::json resultData;
-    QEventLoop loop;
-    QTimer timer;
-    timer.setSingleShot(true);
-    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    m_session->listPrompts("", [&](const nlohmann::json& result, const std::string& nextCursor, const nlohmann::json& error) {
-        resultData = result;
-        loop.quit();
-    });
-    timer.start(to);
-    loop.exec();
+    runSyncWithTimeout([&](const std::function<void()>& quit) {
+        m_session->listPrompts("", [&](const nlohmann::json& result, const std::string& nextCursor, const nlohmann::json& error) {
+            resultData = result;
+            quit();
+        });
+    }, to);
     return _qj(resultData);
 }
 QJsonObject McpQtClient::listPrompts(const QString& c,QString* n,int to){
     if (!m_session) return {};
     nlohmann::json resultData;
     std::string ns;
-    QEventLoop loop;
-    QTimer timer;
-    timer.setSingleShot(true);
-    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    m_session->listPrompts(c.toStdString(), [&](const nlohmann::json& result, const std::string& nextCursor, const nlohmann::json& error) {
-        resultData = result;
-        ns = nextCursor;
-        loop.quit();
-    });
-    timer.start(to);
-    loop.exec();
+    runSyncWithTimeout([&](const std::function<void()>& quit) {
+        m_session->listPrompts(c.toStdString(), [&](const nlohmann::json& result, const std::string& nextCursor, const nlohmann::json& error) {
+            resultData = result;
+            ns = nextCursor;
+            quit();
+        });
+    }, to);
     if (n) *n = QString::fromStdString(ns);
     return _qj(resultData);
 }
@@ -1028,16 +990,12 @@ void McpQtClient::listPromptsAsync(const QString& cursor, std::function<void(con
 QJsonObject McpQtClient::getPrompt(const QString& nm,const QJsonObject& a,int to){
     if (!m_session) return {};
     nlohmann::json resultData;
-    QEventLoop loop;
-    QTimer timer;
-    timer.setSingleShot(true);
-    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    m_session->getPrompt(nm.toStdString(), _nl(a), [&](const nlohmann::json& result, const nlohmann::json& error) {
-        resultData = result;
-        loop.quit();
-    });
-    timer.start(to);
-    loop.exec();
+    runSyncWithTimeout([&](const std::function<void()>& quit) {
+        m_session->getPrompt(nm.toStdString(), _nl(a), [&](const nlohmann::json& result, const nlohmann::json& error) {
+            resultData = result;
+            quit();
+        });
+    }, to);
     return _qj(resultData);
 }
 
@@ -1060,16 +1018,12 @@ void McpQtClient::getPromptAsync(const QString& name, const QJsonObject& argumen
 bool McpQtClient::ping(int to){
     if (!m_session) return false;
     bool ok = false;
-    QEventLoop loop;
-    QTimer timer;
-    timer.setSingleShot(true);
-    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    m_session->ping([&](bool success, const nlohmann::json& error) {
-        ok = success;
-        loop.quit();
-    });
-    timer.start(to);
-    loop.exec();
+    runSyncWithTimeout([&](const std::function<void()>& quit) {
+        m_session->ping([&](bool success, const nlohmann::json& error) {
+            ok = success;
+            quit();
+        });
+    }, to);
     return ok;
 }
 
@@ -1088,16 +1042,12 @@ void McpQtClient::pingAsync(std::function<void(bool success, const QString& erro
 QJsonObject McpQtClient::complete(const QJsonObject& rf,const QJsonObject& ag,int to){
     if (!m_session) return {};
     nlohmann::json resultData;
-    QEventLoop loop;
-    QTimer timer;
-    timer.setSingleShot(true);
-    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    m_session->complete(_nl(rf), _nl(ag), [&](const nlohmann::json& result, const nlohmann::json& error) {
-        resultData = result;
-        loop.quit();
-    });
-    timer.start(to);
-    loop.exec();
+    runSyncWithTimeout([&](const std::function<void()>& quit) {
+        m_session->complete(_nl(rf), _nl(ag), [&](const nlohmann::json& result, const nlohmann::json& error) {
+            resultData = result;
+            quit();
+        });
+    }, to);
     return _qj(resultData);
 }
 
@@ -1116,16 +1066,12 @@ void McpQtClient::completeAsync(const QJsonObject& ref, const QJsonObject& argum
 bool McpQtClient::setLoggingLevel(const QString& lv,int to){
     if(!m_session) return false;
     nlohmann::json errorData;
-    QEventLoop loop;
-    QTimer timer;
-    timer.setSingleShot(true);
-    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    m_session->callTool("logging/setLevel", _nl(QJsonObject{{"level",lv}}), [&](const nlohmann::json& result, const nlohmann::json& error) {
-        errorData = error;
-        loop.quit();
-    });
-    timer.start(to);
-    loop.exec();
+    runSyncWithTimeout([&](const std::function<void()>& quit) {
+        m_session->callTool("logging/setLevel", _nl(QJsonObject{{"level",lv}}), [&](const nlohmann::json& result, const nlohmann::json& error) {
+            errorData = error;
+            quit();
+        });
+    }, to);
     return errorData.empty();
 }
 
@@ -1339,15 +1285,11 @@ void McpQtClient::close(int to){
     }
 
     if(m_session){
-        QEventLoop loop;
-        QTimer timer;
-        timer.setSingleShot(true);
-        QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
-        m_session->shutdown([&loop](bool) {
-            loop.quit();
-        });
-        timer.start(to);
-        loop.exec();
+        runSyncWithTimeout([&](const std::function<void()>& quit) {
+            m_session->shutdown([=](bool) {
+                quit();
+            });
+        }, to);
 
         m_session->close();
         m_session.reset();

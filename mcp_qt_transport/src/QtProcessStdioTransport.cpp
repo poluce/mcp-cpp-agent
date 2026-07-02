@@ -9,6 +9,21 @@ QtProcessStdioTransport::QtProcessStdioTransport(const std::string& command, con
     connect(m_process, &QProcess::readyReadStandardError, this, &QtProcessStdioTransport::handleReadyReadStandardError);
     connect(m_process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, &QtProcessStdioTransport::handleProcessFinished);
     connect(m_process, &QProcess::errorOccurred, this, &QtProcessStdioTransport::handleProcessError);
+
+#ifdef _WIN32
+    connect(m_process, &QProcess::started, this, [this]() {
+        if (m_jobObject) {
+            qint64 pid = m_process->processId();
+            if (pid > 0) {
+                HANDLE hProcess = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, FALSE, static_cast<DWORD>(pid));
+                if (hProcess) {
+                    AssignProcessToJobObject(m_jobObject, hProcess);
+                    CloseHandle(hProcess);
+                }
+            }
+        }
+    });
+#endif
 }
 
 QtProcessStdioTransport::~QtProcessStdioTransport() {
@@ -21,6 +36,21 @@ QtProcessStdioTransport::~QtProcessStdioTransport() {
 bool QtProcessStdioTransport::start() {
     std::lock_guard<std::mutex> lock(m_mutex);
     if (m_started) return true;
+
+#ifdef _WIN32
+    if (!m_jobObject) {
+        m_jobObject = CreateJobObjectW(nullptr, nullptr);
+        if (m_jobObject) {
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION info;
+            ZeroMemory(&info, sizeof(info));
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            if (!SetInformationJobObject(m_jobObject, JobObjectExtendedLimitInformation, &info, sizeof(info))) {
+                CloseHandle(m_jobObject);
+                m_jobObject = nullptr;
+            }
+        }
+    }
+#endif
     
     QStringList qargs;
     for (const auto& a : m_args) qargs.push_back(QString::fromStdString(a));
@@ -34,6 +64,12 @@ void QtProcessStdioTransport::close() {
     std::function<void()> closeCb;
     {
         std::lock_guard<std::mutex> lock(m_mutex);
+#ifdef _WIN32
+        if (m_jobObject) {
+            CloseHandle(m_jobObject);
+            m_jobObject = nullptr;
+        }
+#endif
         if (!m_started) return;
         m_started = false;
         

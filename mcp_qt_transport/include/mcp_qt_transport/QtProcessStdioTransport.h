@@ -8,6 +8,10 @@
 #include <vector>
 #include <mutex>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 namespace mcp_qt {
 
 class QtProcessStdioTransport : public QObject, public mcp::IMcpTransport {
@@ -42,6 +46,10 @@ private:
     std::string m_buffer;
     std::mutex m_mutex;
     bool m_started{false};
+
+#ifdef _WIN32
+    void* m_jobObject = nullptr;
+#endif
 };
 
 } // namespace mcp_qt
