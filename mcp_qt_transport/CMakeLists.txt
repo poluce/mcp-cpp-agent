@@ -29,4 +29,6 @@ target_compile_options(mcp_qt_transport PRIVATE
     $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
 )
 
-add_subdirectory(${CMAKE_SOURCE_DIR}/tests_qt ${CMAKE_BINARY_DIR}/tests_qt)
+if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
+    add_subdirectory(${CMAKE_SOURCE_DIR}/tests_qt ${CMAKE_BINARY_DIR}/tests_qt)
+endif()

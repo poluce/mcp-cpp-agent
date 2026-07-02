@@ -76,11 +76,14 @@ endif()
 # SDK 核心库（纯 C++17，零外部框架依赖）
 add_subdirectory(mcp_core)
 
-# 独立测试（纯 C++17，不需要 Qt）
-add_subdirectory(tests)
+# If this is the top-level project, build tests and examples
+if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
+    # 独立测试（纯 C++17，不需要 Qt）
+    add_subdirectory(tests)
 
-# 官方一致性测试客户端（纯 C++17，不需要 Qt）
-add_subdirectory(conformance_runner)
+    # 官方一致性测试客户端（纯 C++17，不需要 Qt）
+    add_subdirectory(conformance_runner)
+endif()
 
 option(MCP_ENABLE_QT_TRANSPORT "Build Qt-based HTTP/SSE transport for Qt agents" OFF)
 
@@ -88,6 +91,9 @@ if(MCP_ENABLE_QT_TRANSPORT)
     find_package(Qt6 REQUIRED COMPONENTS Core Network Test)
     add_subdirectory(mcp_qt_transport)
     add_subdirectory(mcp_qt_client)
-    add_subdirectory(conformance_runner_qt)
-    add_subdirectory(examples)
+    
+    if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
+        add_subdirectory(conformance_runner_qt)
+        add_subdirectory(examples)
+    endif()
 endif()
