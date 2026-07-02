@@ -385,6 +385,7 @@ public:
     std::string getInstructions() const;
 
     SessionState state() const { return m_state; }
+    int64_t getLastRequestId() const { return m_lastRequestId.load(); }
 
 private:
     void handleIncomingMessage(const std::string& rawMessage);
@@ -397,6 +398,7 @@ private:
     std::shared_ptr<IMcpTransport> m_transport;
     mutable std::mutex m_mutex;
     int64_t m_nextId = 1;
+    std::atomic<int64_t> m_lastRequestId{0};
 
     std::unordered_map<int64_t, PendingRequest> m_pendingRequests;
     std::unordered_map<int64_t, ProgressCallback> m_progressHandlers;

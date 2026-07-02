@@ -1,5 +1,6 @@
 #include "mcp_qt_client/McpResourceTemplatesModel.h"
 #include "mcp_qt_client/McpQtClient.h"
+#include <mcp_core/McpResource.h>
 
 namespace mcp_qt {
 

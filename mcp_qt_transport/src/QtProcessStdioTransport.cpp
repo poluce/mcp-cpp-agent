@@ -1,5 +1,6 @@
 #include "mcp_qt_transport/QtProcessStdioTransport.h"
 #include <QDebug>
+#include <string_view>
 
 namespace mcp_qt {
 
@@ -145,7 +146,18 @@ void QtProcessStdioTransport::handleReadyReadStandardOutput() {
     if (msgCb) {
         for (const auto& msg : messages) {
             if (!msg.empty()) {
-                msgCb(msg);
+                auto start = msg.find_first_not_of(" \t\r\n");
+                if (start != std::string::npos) {
+                    auto end = msg.find_last_not_of(" \t\r\n");
+                    std::string_view trimmed(msg.data() + start, end - start + 1);
+                    
+                    if (trimmed.front() == '{' && trimmed.back() == '}') {
+                        msgCb(msg);
+                    } else {
+                        qWarning() << "[QtProcessStdioTransport] Filtered out dirty stdout message:"
+                                   << QString::fromStdString(msg);
+                    }
+                }
             }
         }
     }

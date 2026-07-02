@@ -1,4 +1,18 @@
 #include "mcp_qt_client/McpQtClient.h"
+#include <nlohmann/json.hpp>
+#include "mcp_core/McpClientSession.h"
+#include "mcp_core/McpOAuthClient.h"
+#include "mcp_core/IMcpTransport.h"
+#include "mcp_core/McpReconnectPolicy.h"
+
+inline void assertNotMainGuiThread() {
+#if !defined(QT_NO_DEBUG)
+    QCoreApplication* app = QCoreApplication::instance();
+    if (app && app->inherits("QGuiApplication")) {
+        Q_ASSERT(QThread::currentThread() != app->thread());
+    }
+#endif
+}
 #include "mcp_qt_client/McpResourceTemplatesModel.h"
 #include <QEventLoop>
 #include <QJsonDocument>
@@ -18,6 +32,73 @@ namespace mcp_qt {
 // ============================================================================
 static nlohmann::json _nl(const QJsonObject& o){return nlohmann::json::parse(QJsonDocument(o).toJson(QJsonDocument::Compact).toStdString());}
 static QJsonObject _qj(const nlohmann::json& j){return QJsonDocument::fromJson(QByteArray::fromStdString(j.dump())).object();}
+
+// ========== Rich Text Parsing (McpResult Content) ==========
+static QList<McpContent> parseMcpContents(const QJsonObject& raw, bool& decodingError) {
+    QList<McpContent> contents;
+    const QJsonArray contentArray = raw.value("content").toArray();
+    for (const QJsonValue& val : contentArray) {
+        const QJsonObject item = val.toObject();
+        McpContent content;
+        content.rawData = item;
+
+        const QString type = item.value("type").toString();
+        if (type == QStringLiteral("text")) {
+            content.kind = McpContentKind::Text;
+            content.text = item.value("text").toString();
+        } else if (type == QStringLiteral("image")) {
+            content.kind = McpContentKind::Image;
+            content.mimeType = item.value("mimeType").toString();
+            const QString b64 = item.value("data").toString();
+            if (!b64.isEmpty()) {
+                auto decodeResult = QByteArray::fromBase64Encoding(
+                    b64.toUtf8(), QByteArray::AbortOnBase64DecodingErrors);
+                if (decodeResult.decodingStatus == QByteArray::Base64DecodingStatus::Ok) {
+                    content.binary = std::move(decodeResult.decoded);
+                } else {
+                    decodingError = true;
+                }
+            }
+        } else if (type == QStringLiteral("resource")) {
+            content.kind = McpContentKind::EmbeddedResource;
+            QJsonObject resObj = item.value("resource").toObject();
+            if (!resObj.isEmpty()) {
+                content.mimeType = resObj.value("mimeType").toString();
+                if (resObj.contains("text")) {
+                    content.text = resObj.value("text").toString();
+                } else if (resObj.contains("blob")) {
+                    const QString blobB64 = resObj.value("blob").toString();
+                    auto decodeResult = QByteArray::fromBase64Encoding(
+                        blobB64.toUtf8(), QByteArray::AbortOnBase64DecodingErrors);
+                    if (decodeResult.decodingStatus == QByteArray::Base64DecodingStatus::Ok) {
+                        content.binary = std::move(decodeResult.decoded);
+                    } else {
+                        decodingError = true;
+                    }
+                }
+            } else {
+                content.mimeType = item.value("mimeType").toString();
+                content.text = item.value("text").toString();
+            }
+        }
+        contents.append(content);
+    }
+    return contents;
+}
+
+struct PromiseGuard {
+    std::shared_ptr<QPromise<McpResult>> promise;
+    bool finished{false};
+    ~PromiseGuard() {
+        if (promise && !finished) {
+            McpResult cancelResult;
+            cancelResult.isError = true;
+            cancelResult.errorString = QStringLiteral("Call canceled due to client destruction");
+            promise->addResult(cancelResult);
+            promise->finish();
+        }
+    }
+};
 
 // ============================================================================
 // QNAM 同步 HTTP（整个 Qt 客户端零 libcurl 依赖）
@@ -259,28 +340,53 @@ bool McpQtClient::connectToTransportAndWait(std::shared_ptr<mcp::IMcpTransport> 
     return doInitializeAndWait(name,ver,to,err);
 }
 
-void McpQtClient::setClientCapabilities(const nlohmann::json& caps) {
-    m_clientCapabilities = caps;
+void McpQtClient::setClientCapabilities(const QJsonObject& caps) {
+    m_clientCapabilities = _nl(caps);
 }
 
 template <typename Initiator>
 bool McpQtClient::runSyncWithTimeout(Initiator&& initiator, int timeoutMs) {
+    assertNotMainGuiThread();
     QEventLoop loop;
+    struct SyncContext {
+        QEventLoop* loopPtr{nullptr};
+        bool completed{false};
+        bool exited{false};
+    };
+    auto ctx = std::make_shared<SyncContext>();
+    ctx->loopPtr = &loop;
+    
     QTimer timer;
     timer.setSingleShot(true);
     QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
     
-    bool completed = false;
-    initiator([&completed, &loop]() {
-        completed = true;
-        loop.quit();
-    });
+    auto safeQuit = [ctx]() {
+        if (ctx->exited || !ctx->loopPtr) return;
+        ctx->completed = true;
+        ctx->loopPtr->quit();
+    };
+    
+    int64_t idBefore = m_session ? m_session->getLastRequestId() : 0;
+    
+    initiator(safeQuit);
     
     if (timeoutMs > 0) {
         timer.start(timeoutMs);
     }
     loop.exec();
-    return completed;
+    ctx->exited = true;
+    ctx->loopPtr = nullptr;
+    
+    if (!ctx->completed) {
+        if (m_session) {
+            int64_t idAfter = m_session->getLastRequestId();
+            if (idAfter > idBefore) {
+                m_session->cancelRequest(idAfter);
+            }
+        }
+    }
+    
+    return ctx->completed;
 }
 
 void McpQtClient::setupTransportCommon(std::shared_ptr<mcp::IMcpTransport> t) {
@@ -312,7 +418,9 @@ void McpQtClient::setupTransportCommon(std::shared_ptr<mcp::IMcpTransport> t) {
         emit notificationReceived(methodStr, _qj(params));
         
         if (methodStr == "notifications/tools/list_changed") {
-            QMetaObject::invokeMethod(this, &McpQtClient::toolsChanged, Qt::QueuedConnection);
+            QMetaObject::invokeMethod(this, [this]() {
+                refreshToolsCacheAsync();
+            }, Qt::QueuedConnection);
         } else if (methodStr == "notifications/resources/list_changed") {
             QMetaObject::invokeMethod(this, &McpQtClient::resourcesChanged, Qt::QueuedConnection);
         } else if (methodStr == "notifications/prompts/list_changed") {
@@ -358,15 +466,15 @@ void McpQtClient::setupTransportCommon(std::shared_ptr<mcp::IMcpTransport> t) {
     m_pendingCapabilities.clear();
 }
 bool McpQtClient::doInitializeAndWait(const QString& name,const QString& ver,int to, QString* err){
-    bool initOk = false;
-    bool ok = runSyncWithTimeout([&](const std::function<void()>& quit) {
-        m_session->initialize(name.toStdString(), ver.toStdString(), [&](bool success, const nlohmann::json&) {
-            initOk = success;
+    auto initOkPtr = std::make_shared<bool>(false);
+    bool ok = runSyncWithTimeout([initOkPtr, name, ver, this](auto quit) {
+        m_session->initialize(name.toStdString(), ver.toStdString(), [initOkPtr, quit](bool success, const nlohmann::json&) {
+            *initOkPtr = success;
             quit();
         });
     }, to);
 
-    if(!ok || !initOk){ if(err)*err="Initialization timeout or failure"; emit errorOccurred(*err); return false; }
+    if(!ok || !(*initOkPtr)){ if(err)*err="Initialization timeout or failure"; emit errorOccurred(*err); return false; }
     m_initialized=true;emit connected();return true;
 }
 bool McpQtClient::doOAuth(const OAuthConfig& oa){
@@ -401,7 +509,7 @@ std::vector<McpQtTool> McpQtClient::listTools(int to){
             quit();
         });
     }, to);
-    for(const auto& t : result) m_toolSchemaCache[t.name] = t.inputSchema;
+    for(const auto& t : result) m_toolCache[t.name] = t;
     return result;
 }
 std::vector<McpQtTool> McpQtClient::listTools(const QString& c,QString* n,int to){
@@ -417,7 +525,7 @@ std::vector<McpQtTool> McpQtClient::listTools(const QString& c,QString* n,int to
     }, to);
     if (n) *n = QString::fromStdString(ns);
     auto res = _cvt(result);
-    for(const auto& t : res) m_toolSchemaCache[t.name] = t.inputSchema;
+    for(const auto& t : res) m_toolCache[t.name] = t;
     return res;
 }
 std::vector<McpQtTool> McpQtClient::fetchAllTools(int to) {
@@ -439,7 +547,7 @@ void McpQtClient::listToolsAsync(const QString& cursor, std::function<void(const
         QString errStr = error.empty() ? QString() : QString::fromStdString(error.dump());
         QString nc = QString::fromStdString(nextCursor);
         QMetaObject::invokeMethod(this, [this, res, nc, errStr, callback]() {
-            for(const auto& t : res) m_toolSchemaCache[t.name] = t.inputSchema;
+            for(const auto& t : res) m_toolCache[t.name] = t;
             callback(res, nc, errStr);
         }, Qt::QueuedConnection);
     });
@@ -518,10 +626,10 @@ static bool validateProperty(const QJsonValue& val, const QJsonObject& propSchem
     return true;
 }
 
-bool McpQtClient::validateToolSchemaLocally(const QString& name, const QJsonObject& arguments, QString* errorString) const {
-    auto it = m_toolSchemaCache.find(name);
-    if (it == m_toolSchemaCache.end()) return true;
-    QJsonObject schema = it->second;
+bool McpQtClient::validateToolArguments(const QString& name, const QJsonObject& arguments, QString* errorString) const {
+    auto it = m_toolCache.find(name);
+    if (it == m_toolCache.end()) return true;
+    QJsonObject schema = it->second.inputSchema;
     
     // 1. Validate required fields
     if (schema.contains("required") && schema["required"].isArray()) {
@@ -562,8 +670,18 @@ bool McpQtClient::validateToolSchemaLocally(const QString& name, const QJsonObje
     return true;
 }
 McpResult McpQtClient::callTool(const QString& nm,const QJsonObject& a,int to){
-    QString errStr; if(!validateToolSchemaLocally(nm, a, &errStr)) return {true, {}, errStr};
-    if(!m_session) return {true, {}, "No session"};
+    emit toolCalled(nm, a);
+    QString errStr;
+    if(!validateToolArguments(nm, a, &errStr)) {
+        McpResult r{true, {}, errStr, {}};
+        emit toolFinished(nm, r);
+        return r;
+    }
+    if(!m_session) {
+        McpResult r{true, {}, QStringLiteral("No session"), {}};
+        emit toolFinished(nm, r);
+        return r;
+    }
     nlohmann::json resultData, errorData;
     bool ok = runSyncWithTimeout([&](const std::function<void()>& quit) {
         m_session->callTool(nm.toStdString(), _nl(a), [&](const nlohmann::json& result, const nlohmann::json& error) {
@@ -573,18 +691,48 @@ McpResult McpQtClient::callTool(const QString& nm,const QJsonObject& a,int to){
         });
     }, to);
     if (!ok) {
-        return {true, {}, "Timeout"};
+        McpResult r{true, {}, QStringLiteral("Timeout"), {}};
+        emit toolFinished(nm, r);
+        return r;
     }
-    return {!errorData.empty(), _qj(resultData), errorData.empty() ? QString() : _qj(errorData).value("message").toString()};
+    bool isErr = !errorData.empty();
+    QJsonObject data = _qj(resultData);
+    QString errorMsg = isErr ? _qj(errorData).value("message").toString() : QString();
+    QList<McpContent> contents;
+    if (!isErr) {
+        bool decodingError = false;
+        contents = parseMcpContents(data, decodingError);
+        if (decodingError) {
+            isErr = true;
+            errorMsg = QStringLiteral("Base64 decoding failed for multimedia contents");
+        }
+    }
+    McpResult r{isErr, data, errorMsg, contents};
+    emit toolFinished(nm, r);
+    return r;
 }
 McpResult McpQtClient::callTool(const QString& nm,const QJsonObject& a,ProgressCallback onP,int to){
-    QString errStr; if(!validateToolSchemaLocally(nm, a, &errStr)) return {true, {}, errStr};
-    if(!m_session) return {true, {}, "No session"};
+    emit toolCalled(nm, a);
+    QString errStr;
+    if(!validateToolArguments(nm, a, &errStr)) {
+        McpResult r{true, {}, errStr, {}};
+        emit toolFinished(nm, r);
+        return r;
+    }
+    if(!m_session) {
+        McpResult r{true, {}, QStringLiteral("No session"), {}};
+        emit toolFinished(nm, r);
+        return r;
+    }
     nlohmann::json resultData, errorData;
-    auto pf = [onP](const nlohmann::json& pi) {
+    auto pf = [this, nm, onP](const nlohmann::json& pi) {
+        float p = pi.value("progress", 0.0f), t = pi.value("total", 0.0f);
+        QString msg = QString::fromStdString(pi.value("message", ""));
+        QMetaObject::invokeMethod(this, [this, nm, p, t, msg]() {
+            emit progressReported(nm, p, t, msg);
+        }, Qt::QueuedConnection);
         if (onP) {
-            float p = pi.value("progress", 0.0f), t = pi.value("total", 0.0f);
-            onP(p, t, QString::fromStdString(pi.value("message", "")));
+            onP(p, t, msg);
         }
     };
     bool ok = runSyncWithTimeout([&](const std::function<void()>& quit) {
@@ -595,28 +743,83 @@ McpResult McpQtClient::callTool(const QString& nm,const QJsonObject& a,ProgressC
         }, pf);
     }, to);
     if (!ok) {
-        return {true, {}, "Timeout"};
+        McpResult r{true, {}, QStringLiteral("Timeout"), {}};
+        emit toolFinished(nm, r);
+        return r;
     }
-    return {!errorData.empty(), _qj(resultData), errorData.empty() ? QString() : _qj(errorData).value("message").toString()};
+    bool isErr = !errorData.empty();
+    QJsonObject data = _qj(resultData);
+    QString errorMsg = isErr ? _qj(errorData).value("message").toString() : QString();
+    QList<McpContent> contents;
+    if (!isErr) {
+        bool decodingError = false;
+        contents = parseMcpContents(data, decodingError);
+        if (decodingError) {
+            isErr = true;
+            errorMsg = QStringLiteral("Base64 decoding failed for multimedia contents");
+        }
+    }
+    McpResult r{isErr, data, errorMsg, contents};
+    emit toolFinished(nm, r);
+    return r;
 }
 void McpQtClient::callToolAsync(const QString& nm, const QJsonObject& a, std::function<void(McpResult)> cb, ProgressCallback onP) {
     callToolAsync(nm, a, this, cb, onP);
 }
 void McpQtClient::callToolAsync(const QString& nm, const QJsonObject& a, QObject* ctx, std::function<void(McpResult)> cb, ProgressCallback onP) {
+    emit toolCalled(nm, a);
     QString errStr;
-    if(!validateToolSchemaLocally(nm, a, &errStr)) {
+    if(!validateToolArguments(nm, a, &errStr)) {
+        McpResult res{true, {}, errStr, {}};
+        emit toolFinished(nm, res);
         if(ctx) {
             QPointer<QObject> pCtx(ctx);
             if (pCtx) {
-                QMetaObject::invokeMethod(pCtx.data(), [cb, errStr](){ cb({true, {}, errStr}); }, Qt::QueuedConnection);
+                QMetaObject::invokeMethod(pCtx.data(), [cb, res](){ cb(res); }, Qt::QueuedConnection);
             }
         }
-        else { cb({true, {}, errStr}); }
+        else { cb(res); }
         return;
     }
-    sendRequest("tools/call", QJsonObject{{"name",nm},{"arguments",a}}, ctx, [cb](const QJsonObject& r, const QJsonObject& e) {
-        cb({!e.isEmpty(), r, e.isEmpty()?QString{}:e.value("message").toString()});
-    }, onP);
+
+    auto internalOnP = [this, nm, onP](float p, float t, const QString& msg) {
+        QMetaObject::invokeMethod(this, [this, nm, p, t, msg]() {
+            emit progressReported(nm, p, t, msg);
+        }, Qt::QueuedConnection);
+        if (onP) {
+            onP(p, t, msg);
+        }
+    };
+
+    sendRequest("tools/call", QJsonObject{{"name",nm},{"arguments",a}}, ctx, [this, nm, cb](const QJsonObject& r, const QJsonObject& e) {
+        bool isErr = !e.isEmpty();
+        QString errorMsg = isErr ? e.value("message").toString() : QString();
+        QList<McpContent> contents;
+        if (!isErr) {
+            bool decodingError = false;
+            contents = parseMcpContents(r, decodingError);
+            if (decodingError) {
+                isErr = true;
+                errorMsg = QStringLiteral("Base64 decoding failed for multimedia contents");
+            }
+        }
+        McpResult res{isErr, r, errorMsg, contents};
+        emit toolFinished(nm, res);
+        cb(res);
+    }, internalOnP);
+}
+QFuture<McpResult> McpQtClient::callToolFuture(const QString& name, const QJsonObject& arguments) {
+    auto promise = std::make_shared<QPromise<McpResult>>();
+    promise->start();
+    auto guard = std::make_shared<PromiseGuard>();
+    guard->promise = promise;
+    
+    callToolAsync(name, arguments, this, [promise, guard](McpResult res) {
+        promise->addResult(res);
+        promise->finish();
+        guard->finished = true;
+    });
+    return promise->future();
 }
 
 // ========== Typed Tool Results ==========
@@ -682,6 +885,252 @@ void McpQtClient::callToolTypedAsync(const QString& nm, const QJsonObject& a,
     callToolAsync(nm, a, this, [cb](McpResult r) {
         cb(parseToolResult(r.data, r.isError, r.errorString));
     });
+}
+
+// ========== 工具定义导出为 LLM 格式 ==========
+
+static QJsonObject ensureValidSchema(const QJsonObject& schema) {
+    if (schema.isEmpty() || !schema.contains(QStringLiteral("type"))) {
+        QJsonObject fallbackSchema;
+        fallbackSchema[QStringLiteral("type")] = QStringLiteral("object");
+        fallbackSchema[QStringLiteral("properties")] = QJsonObject{};
+        return fallbackSchema;
+    }
+    return schema;
+}
+
+QJsonObject McpQtClient::exportToolToLlmFormat(const McpQtTool& tool, LlmFormat format) {
+    QJsonObject result;
+    QJsonObject validSchema = ensureValidSchema(tool.inputSchema);
+
+    if (format == LlmFormat::OpenAI) {
+        QJsonObject functionObj;
+        functionObj[QStringLiteral("name")] = tool.name;
+        if (!tool.description.isEmpty()) {
+            functionObj[QStringLiteral("description")] = tool.description;
+        }
+        functionObj[QStringLiteral("parameters")] = validSchema;
+        result[QStringLiteral("type")] = QStringLiteral("function");
+        result[QStringLiteral("function")] = functionObj;
+    } else if (format == LlmFormat::Anthropic) {
+        result[QStringLiteral("name")] = tool.name;
+        if (!tool.description.isEmpty()) {
+            result[QStringLiteral("description")] = tool.description;
+        }
+        result[QStringLiteral("input_schema")] = validSchema;
+    } else if (format == LlmFormat::Gemini) {
+        result[QStringLiteral("name")] = tool.name;
+        if (!tool.description.isEmpty()) {
+            result[QStringLiteral("description")] = tool.description;
+        }
+        result[QStringLiteral("parameters")] = validSchema;
+    }
+    return result;
+}
+
+QJsonObject McpQtClient::exportToolToLlmFormat(const QString& name, LlmFormat format) const {
+    auto it = m_toolCache.find(name);
+    if (it == m_toolCache.end()) {
+        return QJsonObject{};
+    }
+    return exportToolToLlmFormat(it->second, format);
+}
+
+QJsonArray McpQtClient::exportAllToolsToLlmFormat(LlmFormat format) const {
+    QJsonArray arr;
+    for (auto it = m_toolCache.begin(); it != m_toolCache.end(); ++it) {
+        arr.append(exportToolToLlmFormat(it->second, format));
+    }
+    return arr;
+}
+
+// ========== 并发多工具调用 ==========
+
+void McpQtClient::callToolsConcurrentAsync(const std::vector<McpBatchCallRequest>& requests,
+                                           std::function<void(const std::vector<McpBatchCallResult>&)> callback,
+                                           int timeoutMs) {
+    if (requests.empty()) {
+        if (callback) {
+            QMetaObject::invokeMethod(this, [callback]() { callback({}); }, Qt::QueuedConnection);
+        }
+        return;
+    }
+
+    struct BatchContext {
+        std::mutex mutex;
+        size_t pending;
+        std::vector<McpBatchCallResult> results;
+        std::function<void(const std::vector<McpBatchCallResult>&)> callback;
+        bool finished = false;
+        QTimer* timer = nullptr;
+        std::vector<int64_t> requestIds;
+    };
+
+    auto ctx = std::make_shared<BatchContext>();
+    ctx->pending = requests.size();
+    ctx->results.resize(requests.size());
+    ctx->callback = callback;
+
+    for (size_t i = 0; i < requests.size(); ++i) {
+        ctx->results[i].name = requests[i].name;
+        ctx->results[i].arguments = requests[i].arguments;
+    }
+
+    // 设置整体超时机制
+    if (timeoutMs > 0) {
+        ctx->timer = new QTimer(this);
+        ctx->timer->setSingleShot(true);
+        QObject::connect(ctx->timer, &QTimer::timeout, this, [this, ctx]() {
+            std::function<void(const std::vector<McpBatchCallResult>&)> cb;
+            std::vector<McpBatchCallResult> res;
+            std::vector<int64_t> idsToCancel;
+            {
+                std::lock_guard<std::mutex> lock(ctx->mutex);
+                if (ctx->finished) return;
+                ctx->finished = true;
+                
+                // 将所有未完成的任务置为超时状态
+                for (auto& item : ctx->results) {
+                    if (item.result.errorString.isEmpty() && item.result.data.isEmpty() && !item.result.isError) {
+                        item.result.isError = true;
+                        item.result.errorString = QStringLiteral("Timeout");
+                        emit toolFinished(item.name, item.result);
+                    }
+                }
+                res = ctx->results;
+                cb = ctx->callback;
+                idsToCancel = ctx->requestIds;
+            }
+
+            // 取消底层的请求以释放连接与并发资源
+            for (int64_t id : idsToCancel) {
+                if (id != -1) {
+                    cancelRequest(id);
+                }
+            }
+
+            if (ctx->timer) {
+                ctx->timer->deleteLater();
+                ctx->timer = nullptr;
+            }
+
+            if (cb) cb(res);
+        });
+        ctx->timer->start(timeoutMs);
+    }
+
+    // 并发启动每一个子任务
+    for (size_t i = 0; i < requests.size(); ++i) {
+        const auto& req = requests[i];
+        
+        emit toolCalled(req.name, req.arguments);
+
+        // 1. 发起请求前加锁检查是否已经结束
+        {
+            std::lock_guard<std::mutex> lock(ctx->mutex);
+            if (ctx->finished) {
+                break;
+            }
+        }
+
+        // 本地参数校验
+        QString errStr;
+        if (!validateToolArguments(req.name, req.arguments, &errStr)) {
+            std::lock_guard<std::mutex> lock(ctx->mutex);
+            McpResult localRes{true, {}, errStr, {}};
+            emit toolFinished(req.name, localRes);
+            ctx->results[i].result = localRes;
+            ctx->pending--;
+            if (ctx->pending == 0 && !ctx->finished) {
+                ctx->finished = true;
+                if (ctx->timer) {
+                    ctx->timer->stop();
+                    ctx->timer->deleteLater();
+                    ctx->timer = nullptr;
+                }
+                auto cb = ctx->callback;
+                auto res = ctx->results;
+                QMetaObject::invokeMethod(this, [cb, res]() { if (cb) cb(res); }, Qt::QueuedConnection);
+            }
+            continue;
+        }
+
+        // 定义回调处理器
+        auto cbWrapper = [this, ctx, i, req](McpResult res) {
+            emit toolFinished(req.name, res);
+            std::function<void(const std::vector<McpBatchCallResult>&)> cb;
+            std::vector<McpBatchCallResult> finalResults;
+            {
+                std::lock_guard<std::mutex> lock(ctx->mutex);
+                if (ctx->finished) return;
+                
+                ctx->results[i].result = res;
+                ctx->pending--;
+                
+                if (ctx->pending == 0) {
+                    ctx->finished = true;
+                    if (ctx->timer) {
+                        ctx->timer->stop();
+                        ctx->timer->deleteLater();
+                        ctx->timer = nullptr;
+                    }
+                    cb = ctx->callback;
+                    finalResults = ctx->results;
+                }
+            }
+            if (cb) {
+                cb(finalResults);
+            }
+        };
+
+        // 异步发起请求
+        int64_t reqId = sendRequest(
+            QStringLiteral("tools/call"), 
+            QJsonObject{{QStringLiteral("name"), req.name}, {QStringLiteral("arguments"), req.arguments}}, 
+            this,
+            [cbWrapper](const QJsonObject& r, const QJsonObject& e) {
+                bool isErr = !e.isEmpty();
+                QString errorMsg = isErr ? e.value(QStringLiteral("message")).toString() : QString();
+                QList<McpContent> contents;
+                if (!isErr) {
+                    bool decodingError = false;
+                    contents = parseMcpContents(r, decodingError);
+                    if (decodingError) {
+                        isErr = true;
+                        errorMsg = QStringLiteral("Base64 decoding failed for multimedia contents");
+                    }
+                }
+                cbWrapper({isErr, r, errorMsg, contents});
+            }
+        );
+
+        // 2. 判定超时是否在此期间已发生，防范竞态条件和资源泄漏
+        bool needCancel = false;
+        {
+            std::lock_guard<std::mutex> lock(ctx->mutex);
+            if (!ctx->finished) {
+                ctx->requestIds.push_back(reqId);
+            } else {
+                needCancel = true;
+            }
+        }
+        if (needCancel && reqId != -1) {
+            cancelRequest(reqId);
+        }
+    }
+}
+
+std::vector<McpBatchCallResult> McpQtClient::callToolsConcurrent(const std::vector<McpBatchCallRequest>& requests,
+                                                                 int timeoutMs) {
+    std::vector<McpBatchCallResult> output;
+    QEventLoop loop;
+    callToolsConcurrentAsync(requests, [&output, &loop](const std::vector<McpBatchCallResult>& res) {
+        output = res;
+        // 跨线程安全地唤醒运行在工作线程栈中的 QEventLoop
+        QMetaObject::invokeMethod(&loop, "quit", Qt::QueuedConnection);
+    }, timeoutMs);
+    loop.exec();
+    return output;
 }
 
 // ========== Resources ==========
@@ -851,17 +1300,18 @@ void McpQtClient::subscribeResourceAsync(const QString& uri,
 }
 
 bool McpQtClient::unsubscribeResourceByToken(const QString& uri, int routerToken, int to) {
+    assertNotMainGuiThread();
     m_resourceRouter.unsubscribe(uri, routerToken);
     if (!m_resourceRouter.hasSubscribers(uri)) {
         if(!m_session) return false;
-        bool ok = false;
-        runSyncWithTimeout([&](const std::function<void()>& quit) {
-            m_session->unsubscribeResource(uri.toStdString(), [&](bool success, const nlohmann::json& error) {
-                ok = success;
+        auto okPtr = std::make_shared<bool>(false);
+        runSyncWithTimeout([okPtr, uri, this](auto quit) {
+            m_session->unsubscribeResource(uri.toStdString(), [okPtr, quit](bool success, const nlohmann::json&) {
+                *okPtr = success;
                 quit();
             });
         }, to);
-        return ok;
+        return *okPtr;
     }
     return true;
 }
@@ -1269,6 +1719,7 @@ void McpQtClient::registerCapability(const QString& n,const QJsonObject& c){
 // ========== 生命周期 ==========
 bool McpQtClient::isConnected()const{return m_session&&m_session->state()==mcp::SessionState::Initialized;}
 void McpQtClient::close(int to){
+    assertNotMainGuiThread();
     m_isUserClosed = true;
     if (m_reconnectTimer) {
         m_reconnectTimer->stop();
@@ -1285,8 +1736,8 @@ void McpQtClient::close(int to){
     }
 
     if(m_session){
-        runSyncWithTimeout([&](const std::function<void()>& quit) {
-            m_session->shutdown([=](bool) {
+        runSyncWithTimeout([this](auto quit) {
+            m_session->shutdown([quit](bool) {
                 quit();
             });
         }, to);
@@ -1429,9 +1880,8 @@ void McpQtClient::restoreResourceSubscriptions() {
 void McpQtClient::refreshToolsAfterRecovery() {
     if (!m_session) return;
 
-    // 异步拉取首页以更新工具缓存，避免阻塞主线程死锁
-    listToolsAsync("", nullptr);
-
+    // 异步刷新工具缓存并发射变动信号
+    refreshToolsCacheAsync();
 
     for (auto it = m_toolsModels.begin(); it != m_toolsModels.end();) {
         if (!*it) {
@@ -1441,6 +1891,33 @@ void McpQtClient::refreshToolsAfterRecovery() {
         (*it)->refresh();
         ++it;
     }
+}
+
+void McpQtClient::refreshToolsCacheAsync() {
+    struct Helper {
+        static void fetchPage(QPointer<McpQtClient> safeClient, QString cursor, std::shared_ptr<std::vector<McpQtTool>> accumulated) {
+            if (!safeClient) return;
+            safeClient->listToolsAsync(cursor, [safeClient, accumulated](const std::vector<McpQtTool>& tools, const QString& nextCursor, const QString& error) {
+                if (!safeClient) return;
+                if (!error.isEmpty()) {
+                    return;
+                }
+                accumulated->insert(accumulated->end(), tools.begin(), tools.end());
+                if (!nextCursor.isEmpty()) {
+                    fetchPage(safeClient, nextCursor, accumulated);
+                } else {
+                    safeClient->m_toolCache.clear();
+                    for (const auto& t : *accumulated) {
+                        safeClient->m_toolCache[t.name] = t;
+                    }
+                    emit safeClient->toolsChanged(*accumulated);
+                }
+            });
+        }
+    };
+
+    auto accumulated = std::make_shared<std::vector<McpQtTool>>();
+    Helper::fetchPage(QPointer<McpQtClient>(this), QStringLiteral(""), accumulated);
 }
 
 void McpQtClient::replayQueuedRequests() {

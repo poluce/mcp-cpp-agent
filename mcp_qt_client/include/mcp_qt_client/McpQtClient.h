@@ -1,10 +1,7 @@
 #pragma once
 
-#include <mcp_core/McpClientSession.h>
-#include <mcp_core/McpTool.h>
 #include <mcp_core/McpResource.h>
 #include <mcp_core/McpPrompt.h>
-#include <mcp_core/McpOAuthClient.h>
 #include <mcp_qt_transport/QtHttpSseTransport.h>
 #include <mcp_qt_transport/QtProcessStdioTransport.h>
 #include <mcp_qt_transport/QtStatelessHttpTransport.h>
@@ -12,7 +9,6 @@
 #include <mcp_qt_client/McpResourceSubscriptionRouter.h>
 #include <mcp_qt_client/McpToolsModel.h>
 #include <mcp_core/McpReconnectPolicy.h>
-#include <nlohmann/json.hpp>
 
 #include <QObject>
 #include <QPointer>
@@ -21,18 +17,53 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QString>
+#include <QFuture>
+#include <QPromise>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
 #include <vector>
 
+
+namespace mcp {
+class McpClientSession;
+class McpOAuthClient;
+class IMcpTransport;
+}
+
 namespace mcp_qt {
+
+enum class McpContentKind {
+    Text,
+    Image,
+    EmbeddedResource
+};
+
+struct McpContent {
+    McpContentKind kind;
+    QString text;
+    QString mimeType;
+    QByteArray binary;
+    QJsonObject rawData;
+};
 
 struct McpResult {
     bool isError{false};
     QJsonObject data;
     QString errorString;
+    QList<McpContent> contents;
+};
+
+struct McpBatchCallRequest {
+    QString name;
+    QJsonObject arguments;
+};
+
+struct McpBatchCallResult {
+    QString name;
+    QJsonObject arguments;
+    McpResult result;
 };
 
 struct McpQtTool {
@@ -191,6 +222,9 @@ public:
                        std::function<void(McpResult)> callback,
                        ProgressCallback onProgress = nullptr);
 
+    /// 调用工具（现代异步 QFuture 接口）
+    QFuture<McpResult> callToolFuture(const QString& name, const QJsonObject& arguments);
+
     /// 调用工具（同步，返回类型化结果，不丢弃原始 JSON）
     McpQtToolResult callToolTyped(const QString& name, const QJsonObject& arguments, int timeoutMs = 10000);
 
@@ -198,6 +232,36 @@ public:
     void callToolTypedAsync(const QString& name, const QJsonObject& arguments,
                             std::function<void(McpQtToolResult)> callback,
                             int timeoutMs = 10000);
+
+    // ========== 公开参数校验 API ==========
+    /// 本地校验工具参数是否符合 Schema 要求
+    bool validateToolArguments(const QString& name, const QJsonObject& arguments, QString* errorString = nullptr) const;
+
+    // ========== 工具定义导出为 LLM 格式 ==========
+    enum class LlmFormat {
+        OpenAI,       // OpenAI function calling 格式
+        Anthropic,    // Claude/Anthropic tool 格式
+        Gemini        // Gemini function declaration 格式
+    };
+
+    /// 将给定的 McpQtTool 转换为指定 LLM 格式的 JSON 对象
+    static QJsonObject exportToolToLlmFormat(const McpQtTool& tool, LlmFormat format = LlmFormat::OpenAI);
+
+    /// 根据工具名称从缓存中导出为指定 LLM 格式 of JSON 对象
+    QJsonObject exportToolToLlmFormat(const QString& name, LlmFormat format = LlmFormat::OpenAI) const;
+
+    /// 将当前缓存的所有工具定义导出为指定 LLM 格式的 JSON 数组
+    QJsonArray exportAllToolsToLlmFormat(LlmFormat format = LlmFormat::OpenAI) const;
+
+    // ========== 并发多工具调用 ==========
+    /// 异步并发调用多个工具，所有调用完成（或超时）后触发回调
+    void callToolsConcurrentAsync(const std::vector<McpBatchCallRequest>& requests,
+                                  std::function<void(const std::vector<McpBatchCallResult>&)> callback,
+                                  int timeoutMs = 10000);
+
+    /// 同步并发调用多个工具，阻塞等待所有调用完成（或超时）
+    std::vector<McpBatchCallResult> callToolsConcurrent(const std::vector<McpBatchCallRequest>& requests,
+                                                        int timeoutMs = 10000);
 
     // ========== Resources（对齐 TS `listResources()`, `readResource()`, `subscribeResource()`）==========
 
@@ -307,7 +371,7 @@ public:
     // ========== 能力（对齐 TS `registerCapabilities()`）==========
 
     void registerCapability(const QString& name, const QJsonObject& config);
-    void setClientCapabilities(const nlohmann::json& caps);
+    void setClientCapabilities(const QJsonObject& caps);
 
     // ========== 生命周期与重连（对齐 TS `close()`）==========
 
@@ -341,9 +405,14 @@ signals:
     /// 收到服务端的任意通知
     void notificationReceived(const QString& method, const QJsonObject& params);
     // 协议规范事件：服务端列表变更通知
-    void toolsChanged();
+    void toolsChanged(const std::vector<mcp_qt::McpQtTool>& newTools);
     void resourcesChanged();
     void promptsChanged();
+
+    // 遥测监控信号
+    void toolCalled(const QString& name, const QJsonObject& arguments);
+    void toolFinished(const QString& name, const mcp_qt::McpResult& result);
+    void progressReported(const QString& toolName, float progress, float total, const QString& message);
 
     // 重连状态信号
     void reconnecting();
@@ -360,14 +429,13 @@ private:
     bool doInitializeAndWait(const QString& clientName, const QString& clientVersion, int timeoutMs, QString* errorString = nullptr);
     bool doOAuth(const OAuthConfig& oauth);
 
-    static nlohmann::json toNlohmann(const QJsonObject& obj);
-    static QJsonObject fromNlohmann(const nlohmann::json& j);
+
+
 
     std::shared_ptr<mcp::McpClientSession> m_session;
     std::shared_ptr<mcp::McpOAuthClient> m_oauth;
     bool m_initialized{false};
-    mutable std::map<QString, QJsonObject> m_toolSchemaCache;
-    bool validateToolSchemaLocally(const QString& name, const QJsonObject& arguments, QString* errorString) const;
+    mutable std::map<QString, McpQtTool> m_toolCache;
 
     TrafficLogger m_trafficLogger;
     McpResourceSubscriptionRouter m_resourceRouter;
@@ -443,6 +511,7 @@ private:
     void restoreNotificationHandlers();
     void restoreResourceSubscriptions();
     void refreshToolsAfterRecovery();
+    void refreshToolsCacheAsync();
     void replayQueuedRequests();
     bool isReplayableMethod(const QString& method) const;
 

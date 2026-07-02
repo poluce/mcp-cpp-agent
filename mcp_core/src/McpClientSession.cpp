@@ -87,6 +87,7 @@ int64_t McpClientSession::sendRequest(const std::string& method, const json& par
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         id = m_nextId++;
+        m_lastRequestId.store(id);
         m_pendingRequests[id] = PendingRequest{
             std::move(callback),
             std::chrono::steady_clock::now()
