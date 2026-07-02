@@ -34,6 +34,11 @@ QtProcessStdioTransport::~QtProcessStdioTransport() {
     close();
 }
 
+void QtProcessStdioTransport::setEnvironment(const std::unordered_map<std::string, std::string>& env) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_env = env;
+}
+
 bool QtProcessStdioTransport::start() {
     std::lock_guard<std::mutex> lock(m_mutex);
     if (m_started) return true;
@@ -52,6 +57,14 @@ bool QtProcessStdioTransport::start() {
         }
     }
 #endif
+    
+    if (!m_env.empty()) {
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        for (const auto& kv : m_env) {
+            env.insert(QString::fromStdString(kv.first), QString::fromStdString(kv.second));
+        }
+        m_process->setProcessEnvironment(env);
+    }
     
     QStringList qargs;
     for (const auto& a : m_args) qargs.push_back(QString::fromStdString(a));

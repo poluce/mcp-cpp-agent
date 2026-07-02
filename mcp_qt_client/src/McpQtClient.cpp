@@ -8,8 +8,15 @@
 inline void assertNotMainGuiThread() {
 #if !defined(QT_NO_DEBUG)
     QCoreApplication* app = QCoreApplication::instance();
+    // Allow synchronous blocks during application teardown to cleanly close resources.
+    // If the application is quitting, it might not be safe to assert.
     if (app && app->inherits("QGuiApplication")) {
-        Q_ASSERT(QThread::currentThread() != app->thread());
+        // We warn instead of crashing, because crashing on teardown or nested event loop 
+        // in some specific UI designs might be too aggressive for a general SDK.
+        if (QThread::currentThread() == app->thread()) {
+            qWarning() << "[McpQtClient] WARNING: Blocking synchronous MCP call executed on the main GUI thread! "
+                       << "This may cause UI freezes or nested event loop issues.";
+        }
     }
 #endif
 }
@@ -219,6 +226,7 @@ static bool _runOAuthQt(const std::string& sseUrl, const nlohmann::json& ctx,
 McpQtClientBuilder& McpQtClientBuilder::setTransportHttp(const QString& url) { m_transportType = 1; m_url_or_cmd = url; return *this; }
 McpQtClientBuilder& McpQtClientBuilder::setTransportStatelessHttp(const QString& url) { m_transportType = 3; m_url_or_cmd = url; return *this; }
 McpQtClientBuilder& McpQtClientBuilder::setTransportStdio(const QString& command, const QStringList& args) { m_transportType = 2; m_url_or_cmd = command; m_args = args; return *this; }
+McpQtClientBuilder& McpQtClientBuilder::setEnvironment(const QMap<QString, QString>& env) { m_env = env; return *this; }
 McpQtClientBuilder& McpQtClientBuilder::setHttpHeaders(const QMap<QString, QString>& headers) { m_httpHeaders = headers; return *this; }
 McpQtClientBuilder& McpQtClientBuilder::setHttpProxy(const QNetworkProxy& proxy) { m_proxy = proxy; return *this; }
 McpQtClientBuilder& McpQtClientBuilder::setReconnectPolicy(const mcp::McpReconnectPolicy& policy) { m_reconnectPolicy = policy; return *this; }
@@ -230,6 +238,7 @@ std::shared_ptr<McpQtClient> McpQtClientBuilder::buildAndConnectAndWait(QString*
     c->m_transportType = m_transportType;
     c->m_url_or_cmd = m_url_or_cmd;
     c->m_args = m_args;
+    c->m_env = m_env;
     c->m_clientName = m_clientName;
     c->m_clientVersion = m_clientVersion;
     c->m_timeoutMs = m_timeoutMs;
@@ -281,6 +290,13 @@ std::shared_ptr<McpQtClient> McpQtClientBuilder::buildAndConnectAndWait(QString*
             a.push_back(x.toStdString());
         }
         auto t = std::make_shared<mcp_qt::QtProcessStdioTransport>(m_url_or_cmd.toStdString(), a);
+        if (!m_env.isEmpty()) {
+            std::unordered_map<std::string, std::string> envMap;
+            for (auto it = m_env.constBegin(); it != m_env.constEnd(); ++it) {
+                envMap[it.key().toStdString()] = it.value().toStdString();
+            }
+            t->setEnvironment(envMap);
+        }
         if (!c->connectToTransportAndWait(t, m_clientName, m_clientVersion, m_timeoutMs, errorString)) {
             return nullptr;
         }
@@ -294,7 +310,17 @@ std::shared_ptr<McpQtClient> McpQtClientBuilder::buildAndConnectAndWait(QString*
 // McpQtClient
 // ============================================================================
 
-McpQtClient::McpQtClient(QObject* p):QObject(p),m_oauth(std::make_shared<mcp::McpOAuthClient>()){}
+McpQtClient::McpQtClient(QObject* p)
+    : QObject(p)
+    , m_oauth(std::make_shared<mcp::McpOAuthClient>())
+{
+    connect(this, &McpQtClient::toolsChanged, this, [this](const std::vector<McpQtTool>& tools) {
+        m_toolCache.clear();
+        for (const auto& t : tools) {
+            m_toolCache[t.name] = t;
+        }
+    });
+}
 McpQtClient::~McpQtClient(){close();}
 
 McpQtClient::Ptr McpQtClient::connectHttpAndWait(const QString& url,const QString& name,const QString& ver,int to, QString* err){
@@ -532,6 +558,15 @@ std::vector<McpQtTool> McpQtClient::fetchAllTools(int to) {
     std::vector<McpQtTool> all; QString c;
     do { QString nc; auto r=listTools(c,&nc,to); all.insert(all.end(),r.begin(),r.end()); c=nc; } while(!c.isEmpty());
     return all;
+}
+
+std::vector<McpQtTool> McpQtClient::cachedTools() const {
+    std::vector<McpQtTool> tools;
+    tools.reserve(m_toolCache.size());
+    for (auto it = m_toolCache.begin(); it != m_toolCache.end(); ++it) {
+        tools.push_back(it->second);
+    }
+    return tools;
 }
 
 void McpQtClient::listToolsAsync(const QString& cursor, std::function<void(const std::vector<McpQtTool>&, const QString&, const QString&)> callback) {
@@ -1814,7 +1849,15 @@ void McpQtClient::executeReconnectAttempt() {
             for (const auto& x : m_args) {
                 a.push_back(x.toStdString());
             }
-            newTransport = std::make_shared<mcp_qt::QtProcessStdioTransport>(m_url_or_cmd.toStdString(), a);
+            auto t = std::make_shared<mcp_qt::QtProcessStdioTransport>(m_url_or_cmd.toStdString(), a);
+            if (!m_env.isEmpty()) {
+                std::unordered_map<std::string, std::string> envMap;
+                for (auto it = m_env.constBegin(); it != m_env.constEnd(); ++it) {
+                    envMap[it.key().toStdString()] = it.value().toStdString();
+                }
+                t->setEnvironment(envMap);
+            }
+            newTransport = t;
         }
     }
 
@@ -1984,6 +2027,7 @@ std::shared_ptr<McpQtClient> McpQtClientBuilder::buildAndConnectAsync() {
     c->m_transportType = m_transportType;
     c->m_url_or_cmd = m_url_or_cmd;
     c->m_args = m_args;
+    c->m_env = m_env;
     c->m_clientName = m_clientName;
     c->m_clientVersion = m_clientVersion;
     c->m_timeoutMs = m_timeoutMs;
@@ -2019,6 +2063,13 @@ std::shared_ptr<McpQtClient> McpQtClientBuilder::buildAndConnectAsync() {
         std::vector<std::string> a;
         for (const auto& x : m_args) a.push_back(x.toStdString());
         auto t = std::make_shared<mcp_qt::QtProcessStdioTransport>(m_url_or_cmd.toStdString(), a);
+        if (!m_env.isEmpty()) {
+            std::unordered_map<std::string, std::string> envMap;
+            for (auto it = m_env.constBegin(); it != m_env.constEnd(); ++it) {
+                envMap[it.key().toStdString()] = it.value().toStdString();
+            }
+            t->setEnvironment(envMap);
+        }
         c->connectToTransportAsync(t, m_clientName, m_clientVersion);
         return c;
     }

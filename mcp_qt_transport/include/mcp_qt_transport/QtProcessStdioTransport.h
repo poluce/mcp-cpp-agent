@@ -20,6 +20,8 @@ public:
     QtProcessStdioTransport(const std::string& command, const std::vector<std::string>& args, QObject* parent = nullptr);
     ~QtProcessStdioTransport() override;
 
+    void setEnvironment(const std::unordered_map<std::string, std::string>& env);
+
     bool start() override;
     void close() override;
     bool send(const std::string& message) override;
@@ -37,6 +39,7 @@ private slots:
 private:
     std::string m_command;
     std::vector<std::string> m_args;
+    std::unordered_map<std::string, std::string> m_env;
     QProcess* m_process;
     
     std::function<void(const std::string&)> m_onMessage;

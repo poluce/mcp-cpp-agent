@@ -13,6 +13,7 @@ add_executable(tests_qt
     test_qt_tools_model.cpp
     test_qt_transport_recovery.cpp
     test_qt_stateless_http_transport.cpp
+    test_qt_server_manager_router.cpp
 )
 
 target_include_directories(tests_qt PRIVATE

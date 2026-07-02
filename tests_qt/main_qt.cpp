@@ -23,6 +23,7 @@ void test_qt_typed_results();
 void test_qt_resource_router();
 void test_qt_tools_model();
 void test_qt_transport_recovery();
+void test_qt_server_manager_router();
 
 int main(int argc, char* argv[]) {
     QCoreApplication app(argc, argv);
@@ -51,6 +52,7 @@ int main(int argc, char* argv[]) {
     TM_RUN_TEST(test_qt_transport_recovery);
     TM_RUN_TEST(test_qt_stateless_http_transport_basic);
     TM_RUN_TEST(test_qt_stateless_http_transport_headers);
+    TM_RUN_TEST(test_qt_server_manager_router);
 
     TmTestRunner::instance().printSummary();
     return TmTestRunner::instance().hasFailed() ? 1 : 0;

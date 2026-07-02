@@ -83,6 +83,7 @@ public:
     McpQtClientBuilder& setTransportHttp(const QString& url);
     McpQtClientBuilder& setTransportStatelessHttp(const QString& url);
     McpQtClientBuilder& setTransportStdio(const QString& command, const QStringList& args = {});
+    McpQtClientBuilder& setEnvironment(const QMap<QString, QString>& env);
     McpQtClientBuilder& setClientInfo(const QString& name, const QString& version);
     McpQtClientBuilder& setTimeout(int ms);
     McpQtClientBuilder& setHttpHeaders(const QMap<QString, QString>& headers);
@@ -97,6 +98,7 @@ private:
     QString m_clientName{QStringLiteral("mcp-qt-client")};
     QString m_clientVersion{QStringLiteral("1.0.0")};
     int m_timeoutMs{10000};
+    QMap<QString, QString> m_env;
     QMap<QString, QString> m_httpHeaders;
     std::optional<QNetworkProxy> m_proxy;
     mcp::McpReconnectPolicy m_reconnectPolicy;
@@ -196,6 +198,9 @@ public:
     std::vector<McpQtTool> listTools(int timeoutMs = 10000);
     std::vector<McpQtTool> listTools(const QString& cursor, QString* nextCursor = nullptr, int timeoutMs = 10000);
     std::vector<McpQtTool> fetchAllTools(int timeoutMs = 10000);
+
+    /// 获取当前缓存在客户端中的所有工具列表（不触发网络请求）
+    std::vector<McpQtTool> cachedTools() const;
 
     /// 异步获取工具列表
     void listToolsAsync(const QString& cursor, std::function<void(const std::vector<McpQtTool>& tools, const QString& nextCursor, const QString& error)> callback);
@@ -450,6 +455,7 @@ private:
     int m_transportType{0}; // 0=none/test, 1=http, 2=stdio
     QString m_url_or_cmd;
     QStringList m_args;
+    QMap<QString, QString> m_env;
     QMap<QString, QString> m_httpHeaders;
     std::optional<QNetworkProxy> m_proxy;
     QString m_clientName{QStringLiteral("mcp-qt-client")};

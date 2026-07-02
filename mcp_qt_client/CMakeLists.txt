@@ -11,6 +11,10 @@ add_library(mcp_qt_client STATIC
     src/McpResourcesModel.cpp
     include/mcp_qt_client/McpResourceTemplatesModel.h
     src/McpResourceTemplatesModel.cpp
+    include/mcp_qt_client/McpServerManager.h
+    src/McpServerManager.cpp
+    include/mcp_qt_client/McpToolRouter.h
+    src/McpToolRouter.cpp
 )
 
 target_include_directories(mcp_qt_client PUBLIC
