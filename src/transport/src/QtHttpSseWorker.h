@@ -65,6 +65,9 @@ private:
     QTimer* m_reconnectTimer{nullptr};
     QTimer* m_healthCheckTimer{nullptr};
     QtSseParser m_parser;
+    bool m_endpointResolved{false};
+    QStringList m_pendingMessages;
+    void flushPendingMessages();
 };
 
 } // namespace mcp_qt

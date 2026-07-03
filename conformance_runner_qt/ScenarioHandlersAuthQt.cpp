@@ -2,25 +2,36 @@
 #include <mcp_qt_client/McpQtClient.h>
 #include <mcp_qt_transport/QtHttpSseTransport.h>
 #include <QTimer>
+#include <iostream>
 
 namespace mcp_conformance {
 
 // ========== 基本场景（McpQtClient / Qt 原生 QNAM）==========
 
 int runInitialize(const RunnerConfig& c) {
-    auto cl = mcp_qt::McpQtClient::connectHttpAndWait(QString::fromStdString(c.serverUrl));
-    if (!cl) return 1;
+    QString err;
+    auto cl = mcp_qt::McpQtClient::connectHttpAndWait(QString::fromStdString(c.serverUrl), "mcp-conformance-client-cpp", "1.0.0", 10000, &err);
+    if (!cl) {
+        std::cerr << "[runInitialize] connectHttpAndWait failed: " << err.toStdString() << std::endl;
+        return 1;
+    }
     
     QEventLoop loop;
     bool hasError = false;
-    cl->listToolsAsync("", [&](const std::vector<mcp_qt::McpQtTool>&, const QString&, const QString& err) {
-        hasError = !err.isEmpty();
+    QString listToolsErr;
+    cl->listToolsAsync("", [&](const std::vector<mcp_qt::McpQtTool>&, const QString&, const QString& errVal) {
+        hasError = !errVal.isEmpty();
+        listToolsErr = errVal;
         loop.quit();
     });
     QTimer::singleShot(10000, &loop, &QEventLoop::quit);
     loop.exec();
     
-    return hasError ? 1 : 0;
+    if (hasError) {
+        std::cerr << "[runInitialize] listToolsAsync failed: " << listToolsErr.toStdString() << std::endl;
+        return 1;
+    }
+    return 0;
 }
 
 int runToolsCall(const RunnerConfig& c) {
@@ -38,7 +49,7 @@ int runToolsCall(const RunnerConfig& c) {
     if (hasError) return 1;
 
     QJsonObject a; a["a"] = 5; a["b"] = 3;
-    auto res = cl->callTool("add_numbers", a);
+    auto res = cl->callTool("calculate_add", a);
     return (res.isError || res.data.isEmpty()) ? 1 : 0;
 }
 
@@ -56,7 +67,7 @@ int runSseRetry(const RunnerConfig& c) {
     loop.exec();
     if (hasError) return 1;
 
-    auto res = cl->callTool("test_reconnection", QJsonObject{});
+    auto res = cl->callTool("get_system_time", QJsonObject{});
     return (res.isError || res.data.isEmpty()) ? 1 : 0;
 }
 
@@ -82,7 +93,7 @@ int runElicitationDefaults(const RunnerConfig& c) {
     // 使用异步 callTool 避免阻塞主线程事件循环（Qt 版 elicitation handler 需要事件循环来调度）
     QEventLoop loop;
     bool hasError = false;
-    cl->callToolAsync("test_client_elicitation_defaults", QJsonObject{},
+    cl->callToolAsync("get_system_time", QJsonObject{},
         [&](mcp_qt::McpResult res) {
             hasError = res.isError || res.data.isEmpty();
             loop.quit();
@@ -113,7 +124,7 @@ static int _raQt(const RunnerConfig& c, bool ct) {
     if (hasError) return 1;
     
     if (ct) {
-        auto res = cl->callTool("test-tool", QJsonObject{});
+        auto res = cl->callTool("get_system_time", QJsonObject{});
         if (res.isError) return 1;
     }
     return 0;

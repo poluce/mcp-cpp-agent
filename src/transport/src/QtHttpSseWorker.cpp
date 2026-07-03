@@ -141,6 +141,7 @@ void QtHttpSseWorker::applyCommonHeaders(QNetworkRequest& request) const {
 }
 
 void QtHttpSseWorker::openSse() {
+    m_endpointResolved = false;
     if (m_stopping) {
         return;
     }
@@ -263,6 +264,8 @@ void QtHttpSseWorker::handleSseEvent(const QtSseEvent& event) {
     }
     if (event.eventName == "endpoint") {
         m_postUrl = resolveUrl(m_baseUrl, QString::fromStdString(event.data));
+        m_endpointResolved = true;
+        flushPendingMessages();
         return;
     }
     emit messageReceived(QString::fromStdString(event.data));
@@ -280,6 +283,10 @@ void QtHttpSseWorker::scheduleReconnect() {
 bool QtHttpSseWorker::postMessage(const QString& payload, int retryCount) {
     if (m_stopping) {
         return false;
+    }
+    if (!m_endpointResolved) {
+        m_pendingMessages.append(payload);
+        return true;
     }
     if (!m_network) {
         m_network = new QNetworkAccessManager(this);
@@ -372,6 +379,13 @@ bool QtHttpSseWorker::postMessage(const QString& payload, int retryCount) {
     });
 
     return true;
+}
+
+void QtHttpSseWorker::flushPendingMessages() {
+    for (const auto& msg : m_pendingMessages) {
+        postMessage(msg);
+    }
+    m_pendingMessages.clear();
 }
 
 } // namespace mcp_qt

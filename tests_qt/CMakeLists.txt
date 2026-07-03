@@ -23,9 +23,9 @@ target_include_directories(tests_qt PRIVATE
     ${CMAKE_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_SOURCE_DIR}/examples/multi_server_agent
-    ${CMAKE_SOURCE_DIR}/mcp_qt_transport/include
-    ${CMAKE_SOURCE_DIR}/mcp_qt_transport/src
-    ${CMAKE_SOURCE_DIR}/mcp_qt_client/include
+    ${CMAKE_SOURCE_DIR}/src/transport/include
+    ${CMAKE_SOURCE_DIR}/src/transport/src
+    ${CMAKE_SOURCE_DIR}/src/client/include
 )
 
 target_link_libraries(tests_qt PRIVATE
@@ -46,8 +46,8 @@ add_executable(tests_qt_https_runtime EXCLUDE_FROM_ALL
 target_include_directories(tests_qt_https_runtime PRIVATE
     ${CMAKE_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_SOURCE_DIR}/mcp_qt_transport/include
-    ${CMAKE_SOURCE_DIR}/mcp_qt_transport/src
+    ${CMAKE_SOURCE_DIR}/src/transport/include
+    ${CMAKE_SOURCE_DIR}/src/transport/src
 )
 
 target_link_libraries(tests_qt_https_runtime PRIVATE

@@ -20,9 +20,9 @@ FetchContent_MakeAvailable(json)
 find_package(Qt6 REQUIRED COMPONENTS Core Network Test)
 
 # Add SDK Core and Qt components
-add_subdirectory(mcp_core)
-add_subdirectory(mcp_qt_transport)
-add_subdirectory(mcp_qt_client)
+add_subdirectory(src/core)
+add_subdirectory(src/transport)
+add_subdirectory(src/client)
 
 # If this is the top-level project, build tests and examples
 if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)

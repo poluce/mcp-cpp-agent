@@ -8,8 +8,8 @@ add_library(multi_server_agent_core STATIC
 
 target_include_directories(multi_server_agent_core PUBLIC
     ${CMAKE_SOURCE_DIR}
-    ${CMAKE_SOURCE_DIR}/mcp_qt_client/include
-    ${CMAKE_SOURCE_DIR}/mcp_core/include
+    ${CMAKE_SOURCE_DIR}/src/client/include
+    ${CMAKE_SOURCE_DIR}/src/core/include
 )
 
 target_link_libraries(multi_server_agent_core PUBLIC

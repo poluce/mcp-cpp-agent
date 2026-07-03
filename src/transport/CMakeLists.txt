@@ -15,7 +15,7 @@ add_library(mcp_qt_transport STATIC
 
 target_include_directories(mcp_qt_transport PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}/mcp_core/include
+    ${CMAKE_SOURCE_DIR}/src/core/include
 )
 
 target_link_libraries(mcp_qt_transport PUBLIC

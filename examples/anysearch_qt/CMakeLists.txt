@@ -1,8 +1,8 @@
 add_executable(anysearch_qt main.cpp)
 
 target_include_directories(anysearch_qt PRIVATE
-    ${CMAKE_SOURCE_DIR}/mcp_qt_client/include
-    ${CMAKE_SOURCE_DIR}/mcp_core/include
+    ${CMAKE_SOURCE_DIR}/src/client/include
+    ${CMAKE_SOURCE_DIR}/src/core/include
 )
 
 target_link_libraries(anysearch_qt PRIVATE

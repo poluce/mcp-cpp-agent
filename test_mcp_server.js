@@ -417,6 +417,7 @@ if (isHttp) {
     // 2. 校验协议版本首部 MCP-Protocol-Version
     const protocolVersion = req.headers['mcp-protocol-version'];
     if (!protocolVersion || protocolVersion !== '2025-11-25') {
+      console.error(`[Server] Rejecting request: Missing or unsupported MCP-Protocol-Version header (${protocolVersion})`);
       res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
       res.end('Bad Request: Missing or unsupported MCP-Protocol-Version\n');
       return;
@@ -475,6 +476,7 @@ if (isHttp) {
       } else if (req.method === 'POST') {
         const sessionId = parsedUrl.query.sessionId;
         if (!sessionId || !activeSessions.has(sessionId)) {
+          console.error(`[Server] Rejecting POST request: Invalid or missing sessionId (${sessionId})`);
           res.writeHead(400, { 'Content-Type': 'text/plain' });
           res.end('Bad Request: Invalid or missing sessionId\n');
           return;
@@ -489,6 +491,7 @@ if (isHttp) {
 
         req.on('end', () => {
           try {
+            console.error(`[Server] Received POST body: ${body}`);
             const request = JSON.parse(body);
             // HTTP POST 仅用于投递消息，立即返回 202 Accepted 状态，实际响应异步由 SSE 下发
             res.writeHead(202, {
