@@ -17,6 +17,10 @@ public:
     explicit McpPromptRouter(McpServerManager* manager, QObject* parent = nullptr);
     ~McpPromptRouter() override = default;
 
+signals:
+    void promptsChanged();
+
+public:
     // 获取所有服务器的 Prompts，自动加上 serverName_ 前缀
     QJsonArray fetchAllPrompts(int timeoutMs = 10000) const;
 

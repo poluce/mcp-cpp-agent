@@ -6,7 +6,14 @@
 namespace mcp_qt {
 
 McpPromptRouter::McpPromptRouter(McpServerManager* manager, QObject* parent)
-    : QObject(parent), m_manager(manager) {}
+    : QObject(parent), m_manager(manager) 
+{
+    if (m_manager) {
+        connect(m_manager, &McpServerManager::clientConnected, this, &McpPromptRouter::promptsChanged);
+        connect(m_manager, &McpServerManager::clientDisconnected, this, &McpPromptRouter::promptsChanged);
+        connect(m_manager, &McpServerManager::clientPromptsChanged, this, &McpPromptRouter::promptsChanged);
+    }
+}
 
 QJsonArray McpPromptRouter::fetchAllPrompts(int timeoutMs) const {
     QJsonArray allPrompts;

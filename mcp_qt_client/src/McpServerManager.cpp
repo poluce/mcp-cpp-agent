@@ -172,6 +172,9 @@ void McpServerManager::setupClientSignals(const QString& serverName, const std::
     connect(client.get(), &McpQtClient::toolsChanged, this, [this, serverName](const std::vector<mcp_qt::McpQtTool>& newTools) {
         emit clientToolsChanged(serverName, newTools);
     });
+    connect(client.get(), &McpQtClient::promptsChanged, this, [this, serverName]() {
+        emit clientPromptsChanged(serverName);
+    });
 }
 
 } // namespace mcp_qt

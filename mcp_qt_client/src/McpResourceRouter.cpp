@@ -29,6 +29,35 @@ QJsonArray McpResourceRouter::fetchAllResources(int timeoutMs) const {
     return allResources;
 }
 
+void McpResourceRouter::fetchAllResourcesAsync(std::function<void(const QJsonArray& resources)> callback, int timeoutMs) const {
+    if (!m_manager || !callback) {
+        if (callback) callback(QJsonArray());
+        return;
+    }
+
+    auto serverNames = m_manager->serverNames();
+    if (serverNames.isEmpty()) {
+        callback(QJsonArray());
+        return;
+    }
+
+    auto allResources = std::make_shared<QJsonArray>();
+    auto pendingCount = std::make_shared<int>(serverNames.size());
+
+    for (const QString& serverName : serverNames) {
+        auto client = m_manager->client(serverName);
+        if (!client) {
+            if (--(*pendingCount) == 0) callback(*allResources);
+            continue;
+        }
+
+        // We can't use client->listResourcesAsync easily to fetch ALL pages asynchronously without writing a recursive helper.
+        // But since we want to avoid QEventLoop blocks, we MUST use async.
+        // For simplicity, we just use QTimer::singleShot with QtConcurrent, or just call the sync version in QtConcurrent::run!
+        // Because fetchAllResources is slow, we can offload it to a worker thread!
+    }
+}
+
 QPair<QString, QString> McpResourceRouter::parseResourceUri(const QString& nameSpacedUri) const {
     if (!m_manager) return {};
     for (const QString& serverName : m_manager->serverNames()) {

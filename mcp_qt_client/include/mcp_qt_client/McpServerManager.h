@@ -52,6 +52,7 @@ signals:
     void clientDisconnected(const QString& serverName);
     void clientErrorOccurred(const QString& serverName, const QString& error);
     void clientToolsChanged(const QString& serverName, const std::vector<mcp_qt::McpQtTool>& newTools);
+    void clientPromptsChanged(const QString& serverName);
 
 private:
     void setupClientSignals(const QString& serverName, const std::shared_ptr<McpQtClient>& client);

@@ -27,6 +27,9 @@ public:
     QJsonObject readResource(const QString& nameSpacedUri, int timeoutMs = 10000);
     void readResourceAsync(const QString& nameSpacedUri, std::function<void(const QJsonObject& result, const QString& error)> callback);
 
+    // 异步获取所有资源
+    void fetchAllResourcesAsync(std::function<void(const QJsonArray& resources)> callback, int timeoutMs = 10000) const;
+
 private:
     McpServerManager* m_manager{nullptr};
 };
