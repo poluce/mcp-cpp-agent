@@ -436,7 +436,8 @@ void McpQtClient::setupTransportCommon(std::shared_ptr<mcp::IMcpTransport> t) {
         QString errStr = QString::fromStdString(err);
         QMetaObject::invokeMethod(this, [this, errStr]() {
             emit errorOccurred(errStr);
-            handleTransportFailure();
+            // 🌟 核心修复：日常的 stderr 输出不代表连接物理断开，注释 handleTransportFailure() 防止无限重启死循环崩溃
+            // handleTransportFailure();
         }, Qt::QueuedConnection);
     });
     m_session->setNotificationCallback([this](const std::string& method, const nlohmann::json& params) {

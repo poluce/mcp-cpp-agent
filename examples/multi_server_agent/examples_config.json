@@ -1,10 +1,28 @@
 {
-  "mcpServers": {
-    "mock-search-server": {
-      "command": "node",
-      "args": [
-        "F:/B_My_Document/GitHub/mcp-cpp-agent/examples/multi_server_agent/mock_search_server.js"
-      ]
+    "logFile": "F:\\B_My_Document\\GitHub\\mcp-cpp-agent\\examples\\multi_server_agent\\persistent_test.log",
+    "mcpServers": {
+        "anysearch": {
+            "args": [
+                "-y",
+                "mcp-remote",
+                "https://api.anysearch.com/mcp",
+                "--header",
+                "Authorization: Bearer as_sk_*********************************"
+            ],
+            "command": "npx.cmd"
+        },
+        "mock-search-server": {
+            "args": [
+                "F:/B_My_Document/GitHub/mcp-cpp-agent/examples/multi_server_agent/mock_search_server.js"
+            ],
+            "command": "node"
+        },
+        "playwright": {
+            "args": [
+                "-y",
+                "@playwright/mcp"
+            ],
+            "command": "npx.cmd"
+        }
     }
-  }
 }

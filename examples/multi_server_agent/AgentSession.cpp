@@ -2,48 +2,103 @@
 
 #include <QJsonArray>
 #include <QTimer>
-
+#include <QJsonDocument>
+#include <QDateTime>
 #include <algorithm>
 #include <iostream>
 
 AgentSession::AgentSession(mcp_qt::McpServerManager* manager,
-                           HeuristicToolSelector* selector,
+                           std::shared_ptr<mcp_agent::ILlmBackend> llmBackend,
                            DiagnosticReporter* reporter,
                            QObject* parent)
     : QObject(parent)
     , m_manager(manager)
-    , m_selector(selector)
+    , m_llmBackend(llmBackend)
     , m_reporter(reporter)
-    , m_router(manager) {}
+    , m_router(manager) 
+{
+    // 创建 ReAct 环路执行引擎
+    m_executor = new mcp_agent::LlmAgentExecutor(m_llmBackend, this);
+
+    // 绑定大模型决策后的工具调度回调
+    m_executor->setToolDispatcher([this](const QString& namespacedToolName, const QJsonObject& args, std::function<void(mcp_qt::McpResult)> callback) {
+        qInfo().noquote() << "[AgentSession] Dispatching tool call via SDK:" << namespacedToolName 
+                          << QJsonDocument(args).toJson(QJsonDocument::Compact);
+
+        if (m_reporter) {
+            m_reporter->addObservation(QStringLiteral("tool/call"), 
+                                       QStringLiteral("Calling %1").arg(namespacedToolName));
+        }
+
+        // McpToolRouter 原生支持以 namespacedName (serverName_toolName) 进行异步分发调用
+        m_router.callToolAsync(namespacedToolName, args, [this, namespacedToolName, args, callback](mcp_qt::McpResult result) {
+            if (result.isError) {
+                QString detailedObsErr = QString(
+                    "无法派发本轮 MCP 工具调用: %1\n"
+                    "【排查状态信息】\n"
+                    " - 发生时间: %2\n"
+                    " - 当前流程阶段: [TOOL_DISPATCH - 工具分发调用]\n"
+                    " - 尝试调用工具: %3\n"
+                    " - 工具输入参数: %4\n"
+                    " - 当前可用服务端: %5\n"
+                    " - 诊断排查建议: 请确认该工具名是否输入正确；如使用 Stdio 连接，请确保配置文件 examples_config.json 中的 server command 可正常启动且无输出阻断。"
+                ).arg(result.errorString)
+                 .arg(QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss.zzz"))
+                 .arg(namespacedToolName)
+                 .arg(QJsonDocument(args).toJson(QJsonDocument::Compact))
+                 .arg(m_manager ? m_manager->serverNames().join(", ") : "None");
+                
+                result.errorString = detailedObsErr;
+            }
+            callback(result);
+        });
+    });
+}
 
 void AgentSession::start(const AgentRunOptions& options) {
+    m_executor->setDiagnosticContext(options.apiUrl, options.apiKey, options.modelName);
     m_timeoutMs = options.timeoutMs;
     m_finished = false;
     m_runStarted = false;
-    std::cerr << "[AgentSession] start() called, config=" << options.configPath.toStdString() << "\n";
+    
+    qInfo().noquote() << "[AgentSession] start() called, config=" << options.configPath;
 
+    // 监听连接成功的事件并打印
     QObject::connect(m_manager, &mcp_qt::McpServerManager::clientConnected, this, [this, options](const QString& serverName) {
-        std::cerr << "[AgentSession] clientConnected: " << serverName.toStdString() << "\n";
+        qInfo().noquote() << "[AgentSession] 成功连通并激活服务端:" << serverName;
         if (m_reporter) {
             m_reporter->addExecutionLogLine(QStringLiteral("Server connected: %1").arg(serverName));
         }
         if (!m_runStarted) {
-            beginRunAgainstCurrentClients(options.task, options.serverFilter);
+            // 如果所配的全部服务器都已提前连上，可以直接起跑
+            bool allConnected = true;
+            QStringList allNames = m_manager->serverNames();
+            for (const auto& name : allNames) {
+                auto client = m_manager->client(name);
+                if (!client || !client->isConnected()) {
+                    allConnected = false;
+                    break;
+                }
+            }
+            if (allConnected && !allNames.isEmpty()) {
+                qInfo().noquote() << "[AgentSession] 所有配置的服务器已全部提前连接就绪，立即起跑任务！";
+                beginRunAgainstCurrentClients(options.task, options.serverFilter);
+            }
         }
     });
 
     QObject::connect(m_manager, &mcp_qt::McpServerManager::clientErrorOccurred, this, [this](const QString& serverName, const QString& error) {
-        std::cerr << "[AgentSession] clientErrorOccurred: " << serverName.toStdString() << " err=" << error.toStdString() << "\n";
+        qInfo().noquote() << "[AgentSession] 服务端报错事件: " << serverName << "err=" << error;
         if (m_reporter) {
             m_reporter->addProblem(QStringLiteral("server/connect"),
-                                   QStringLiteral("Server '%1' reported error: %2").arg(serverName, error),
-                                   QStringLiteral("Expose a clearer aggregate readiness API after config load"));
+                                   QStringLiteral("Server '") + serverName + QStringLiteral("' reported error: ") + error,
+                                   QStringLiteral("Check backend logs"));
         }
     });
 
     bool loadOk = m_manager->loadConfigFile(options.configPath);
-    std::cerr << "[AgentSession] loadConfigFile returned " << (loadOk ? "true" : "false") << "\n";
-    std::cerr << "[AgentSession] registered servers: " << m_manager->serverNames().join(",").toStdString() << "\n";
+    qInfo().noquote() << "[AgentSession] loadConfigFile returned" << (loadOk ? "true" : "false");
+    qInfo().noquote() << "[AgentSession] 当前已注册待连接的服务器列表:" << m_manager->serverNames().join(", ");
 
     if (!loadOk) {
         finishWithError(QStringLiteral("config/load"),
@@ -57,9 +112,30 @@ void AgentSession::start(const AgentRunOptions& options) {
         m_reporter->addExecutionLogLine(QStringLiteral("Waiting for server connection events"));
     }
 
+    // 🌟 定时心跳轮询进度打印器：解决“连接等待期间15秒日志一片死寂、非实时”的痛点！
+    QTimer* progressTimer = new QTimer(this);
+    QObject::connect(progressTimer, &QTimer::timeout, this, [this, progressTimer]() {
+        if (m_runStarted || m_finished) {
+            progressTimer->stop();
+            progressTimer->deleteLater();
+            return;
+        }
+        QStringList statusList;
+        QStringList allNames = m_manager->serverNames();
+        for (const auto& name : allNames) {
+            auto client = m_manager->client(name);
+            bool conn = client && client->isConnected();
+            statusList.append(QString("%1: %2").arg(name, conn ? QStringLiteral("🟢在线") : QStringLiteral("⌛连接中")));
+        }
+        qInfo().noquote() << "[AgentSession] 服务端网络握手进度 ->" << statusList.join(" | ");
+    });
+    progressTimer->start(1500); // 每1.5秒刷新打印一次
+
+    // 超时哨兵：等待 maximum timeoutMs
     QTimer::singleShot(options.timeoutMs, this, [this, options]() {
-        std::cerr << "[AgentSession] connection wait timeout elapsed\n";
+        qInfo().noquote() << "[AgentSession] connection wait timeout elapsed";
         if (!m_runStarted) {
+            qInfo().noquote() << "[AgentSession] 连接等待超时，但为保任务继续，带上当前已在线的服务器强制起跑！";
             if (m_reporter) {
                 m_reporter->addExecutionLogLine(QStringLiteral("Connection wait elapsed; continuing with currently registered clients"));
             }
@@ -67,14 +143,18 @@ void AgentSession::start(const AgentRunOptions& options) {
         }
     });
 
-    QTimer::singleShot(options.timeoutMs * 4, this, [this]() {
-        std::cerr << "[AgentSession] overall watchdog timeout\n";
+    // 全局看门狗
+    m_watchdogTimer = new QTimer(this);
+    m_watchdogTimer->setSingleShot(true);
+    connect(m_watchdogTimer, &QTimer::timeout, this, [this]() {
+        qInfo().noquote() << "[AgentSession] overall watchdog timeout";
         if (!m_finished) {
             finishWithError(QStringLiteral("lifecycle"),
-                            QStringLiteral("Overall agent run timed out before completion"),
-                            QStringLiteral("Real stdio flows still have blocking behavior; investigate transport/session readiness and call timeout paths"));
+                            QStringLiteral("Overall agent ReAct run timed out before completion"),
+                            QStringLiteral("Investigate network delay or tool blocking"));
         }
     });
+    m_watchdogTimer->start(options.timeoutMs * 6);
 }
 
 void AgentSession::runAgainstCurrentClients(const QString& task, const QString& serverFilter, int) {
@@ -82,8 +162,10 @@ void AgentSession::runAgainstCurrentClients(const QString& task, const QString& 
 }
 
 void AgentSession::beginRunAgainstCurrentClients(const QString& task, const QString& serverFilter) {
+    if (m_runStarted) return;
     m_runStarted = true;
-    std::cerr << "[AgentSession] beginRunAgainstCurrentClients\n";
+    
+    qInfo().noquote() << "[AgentSession] beginRunAgainstCurrentClients";
 
     QStringList targetServers = m_manager ? m_manager->serverNames() : QStringList{};
     if (!serverFilter.isEmpty()) {
@@ -94,30 +176,35 @@ void AgentSession::beginRunAgainstCurrentClients(const QString& task, const QStr
         m_reporter->addExecutionLogLine(QStringLiteral("Evaluating %1 server(s) for task: %2").arg(targetServers.size()).arg(task));
     }
 
-    std::vector<ToolCandidateScore> allCandidates;
+    // 1. 从所有连接到的 MCP 服务端拉取并缓存工具定义，组装大模型专用的 availableTools Json 数组
+    QJsonArray availableTools;
     for (const QString& serverName : targetServers) {
         auto client = m_manager ? m_manager->client(serverName) : nullptr;
         if (!client) {
-            std::cerr << "[AgentSession] no client for " << serverName.toStdString() << "\n";
-            if (m_reporter) {
-                m_reporter->addExecutionLogLine(QStringLiteral("Skipping missing client for server %1").arg(serverName));
-            }
+            qInfo().noquote() << "[AgentSession] no client for" << serverName;
             continue;
         }
 
-        std::cerr << "[AgentSession] checking cachedTools for " << serverName.toStdString() << "\n";
+        // 🌟 核心修复：如果客户端根本没有连接成功（处于离线状态），强行跳过，防止同步拉取工具导致主线程卡死！
+        if (!client->isConnected()) {
+            qInfo().noquote() << "[AgentSession]" << serverName << "当前处于离线/握手未就绪状态，跳过工具拉取以防主线程卡死。";
+            continue;
+        }
+
+        qInfo().noquote() << "[AgentSession] checking cachedTools for" << serverName;
         auto tools = client->cachedTools();
         if (tools.empty()) {
-            std::cerr << "[AgentSession] cachedTools empty, fetching for " << serverName.toStdString() << "\n";
+            qInfo().noquote() << "[AgentSession] cachedTools empty, fetching from remote MCP for" << serverName;
             if (m_reporter) {
                 m_reporter->addExecutionLogLine(QStringLiteral("Server %1 has no cached tools; fetching from MCP").arg(serverName));
             }
             tools = client->fetchAllTools(m_timeoutMs);
-            std::cerr << "[AgentSession] fetchAllTools returned " << tools.size() << " tools\n";
+            qInfo().noquote() << "[AgentSession] fetchAllTools returned" << tools.size() << "tools for" << serverName;
         }
+
         if (tools.empty()) {
             if (m_reporter) {
-                m_reporter->addExecutionLogLine(QStringLiteral("Server %1 has no cached tools").arg(serverName));
+                m_reporter->addExecutionLogLine(QStringLiteral("Server %1 has no tools").arg(serverName));
             }
             continue;
         }
@@ -127,103 +214,75 @@ void AgentSession::beginRunAgainstCurrentClients(const QString& task, const QStr
                                        QStringLiteral("Loaded %1 tools from %2").arg(tools.size()).arg(serverName));
         }
 
-        auto ranked = m_selector->rankTools(task, serverName, tools);
-        allCandidates.insert(allCandidates.end(), ranked.candidates.begin(), ranked.candidates.end());
+        for (const auto& t : tools) {
+            QJsonObject tObj;
+            // 组合为 namespaced 命名：如 mock-search-server_search_items
+            tObj["name"] = serverName + "_" + t.name;
+            tObj["description"] = t.description;
+            tObj["inputSchema"] = t.inputSchema;
+            availableTools.append(tObj);
+        }
     }
 
-    if (allCandidates.empty()) {
+    if (availableTools.isEmpty()) {
         finishWithError(QStringLiteral("tool/discovery"),
                         QStringLiteral("No discovered tools were available from the selected servers"),
-                        QStringLiteral("Expose a clearer readiness signal before routing"));
+                        QStringLiteral("Ensure MCP server endpoints are online"));
         return;
     }
 
-    std::sort(allCandidates.begin(), allCandidates.end(), [](const ToolCandidateScore& a, const ToolCandidateScore& b) {
-        if (a.score != b.score) {
-            return a.score > b.score;
+    // 2. 启动 ReAct 引擎
+    m_executor->run(task, availableTools, [this](bool success, QString finalAnswer) {
+        if (!success) {
+            finishWithError(QStringLiteral("react/loop"), 
+                            finalAnswer, 
+                            QStringLiteral("Analyze ReAct step failure or incorrect arguments"));
+        } else {
+            finishSuccessfully(finalAnswer);
         }
-        return a.namespacedToolName < b.namespacedToolName;
-    });
-
-    const int previewCount = std::min<int>(3, static_cast<int>(allCandidates.size()));
-    for (int i = 0; i < previewCount; ++i) {
-        const auto& candidate = allCandidates[static_cast<size_t>(i)];
-        if (m_reporter) {
-            m_reporter->addExecutionLogLine(
-                QStringLiteral("Candidate %1: %2 (score=%3, reasons=%4)")
-                    .arg(i + 1)
-                    .arg(candidate.namespacedToolName)
-                    .arg(candidate.score)
-                    .arg(candidate.reasons.join(QStringLiteral("; "))));
-        }
-    }
-
-    const ToolCandidateScore best = allCandidates.front();
-    if (best.score <= 0) {
-        finishWithError(QStringLiteral("tool/selection"),
-                        QStringLiteral("No suitable tool scored above zero"),
-                        QStringLiteral("Provide richer tool metadata for agent-facing discovery"));
-        return;
-    }
-
-    QString argError;
-    const QJsonObject args = buildSafeArguments(best, task, &argError);
-    if (!argError.isEmpty()) {
-        finishWithError(QStringLiteral("tool/selection"),
-                        argError,
-                        QStringLiteral("Add higher-level helpers for safe schema-to-argument mapping"));
-        return;
-    }
-
-    if (m_reporter) {
-        m_reporter->addExecutionLogLine(QStringLiteral("Selected tool %1 with score %2").arg(best.namespacedToolName).arg(best.score));
-        m_reporter->addObservation(QStringLiteral("tool/call"),
-                                   QStringLiteral("Calling %1").arg(best.namespacedToolName));
-    }
-
-    std::cerr << "[AgentSession] calling tool " << best.namespacedToolName.toStdString() << "\n";
-    m_router.callToolAsync(best.namespacedToolName, args, [this, best](mcp_qt::McpResult result) {
-        std::cerr << "[AgentSession] tool call returned, isError=" << result.isError << "\n";
-        if (result.isError) {
-            finishWithError(QStringLiteral("tool/call"),
-                            QStringLiteral("Tool call failed: %1").arg(result.errorString),
-                            QStringLiteral("Surface structured invocation errors rather than empty results"));
-            return;
-        }
-        finishSuccessfully(QStringLiteral("Tool call succeeded for %1").arg(best.namespacedToolName));
     });
 }
 
-QJsonObject AgentSession::buildSafeArguments(const ToolCandidateScore& candidate, const QString& task, QString* error) const {
-    const QJsonObject properties = candidate.inputSchema.value(QStringLiteral("properties")).toObject();
-    const QJsonArray required = candidate.inputSchema.value(QStringLiteral("required")).toArray();
-    static const QStringList safeFields{
-        QStringLiteral("query"),
-        QStringLiteral("q"),
-        QStringLiteral("keyword"),
-        QStringLiteral("text"),
-        QStringLiteral("prompt")
-    };
+void AgentSession::continueConversation(const QString& task, const QString& serverFilter) {
+    m_finished = false;
 
-    QJsonObject args;
-    for (const QString& field : safeFields) {
-        if (properties.contains(field)) {
-            args[field] = task;
+    qInfo().noquote() << "[AgentSession] continueConversation:" << task;
+
+    QStringList targetServers = m_manager ? m_manager->serverNames() : QStringList{};
+    if (!serverFilter.isEmpty()) {
+        targetServers = QStringList{serverFilter};
+    }
+
+    QJsonArray availableTools;
+    for (const QString& serverName : targetServers) {
+        auto client = m_manager ? m_manager->client(serverName) : nullptr;
+        if (!client || !client->isConnected()) {
+            continue;
+        }
+
+        auto tools = client->cachedTools();
+        for (const auto& t : tools) {
+            QJsonObject tObj;
+            tObj["name"] = serverName + "_" + t.name;
+            tObj["description"] = t.description;
+            tObj["inputSchema"] = t.inputSchema;
+            availableTools.append(tObj);
         }
     }
 
-    for (const auto& requiredValue : required) {
-        const QString field = requiredValue.toString();
-        if (!args.contains(field)) {
-            if (error) {
-                *error = QStringLiteral("Cannot safely construct required argument '%1' for %2")
-                    .arg(field, candidate.namespacedToolName);
-            }
-            return QJsonObject{};
-        }
+    if (m_watchdogTimer) {
+        m_watchdogTimer->start(m_timeoutMs * 6);
     }
 
-    return args;
+    m_executor->continueRun(task, availableTools, [this](bool success, QString finalAnswer) {
+        if (!success) {
+            finishWithError(QStringLiteral("react/loop"), 
+                            finalAnswer, 
+                            QStringLiteral("Analyze ReAct step failure or incorrect arguments"));
+        } else {
+            finishSuccessfully(finalAnswer);
+        }
+    });
 }
 
 void AgentSession::finishWithError(const QString& stage, const QString& message, const QString& suggestion) {
@@ -231,7 +290,10 @@ void AgentSession::finishWithError(const QString& stage, const QString& message,
         return;
     }
     m_finished = true;
-    std::cerr << "[AgentSession] finishWithError stage=" << stage.toStdString() << " msg=" << message.toStdString() << "\n";
+    if (m_watchdogTimer) {
+        m_watchdogTimer->stop();
+    }
+    qInfo().noquote() << "[AgentSession] finishWithError stage=" << stage << "msg=" << message;
     if (m_reporter) {
         m_reporter->addProblem(stage, message, suggestion);
     }
@@ -243,6 +305,10 @@ void AgentSession::finishSuccessfully(const QString& message) {
         return;
     }
     m_finished = true;
+    if (m_watchdogTimer) {
+        m_watchdogTimer->stop();
+    }
+    qInfo().noquote() << "[AgentSession] finishSuccessfully message=" << message;
     if (m_reporter) {
         m_reporter->addExecutionLogLine(message);
         m_reporter->addObservation(QStringLiteral("result/render"), message);

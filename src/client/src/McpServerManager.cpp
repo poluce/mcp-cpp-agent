@@ -3,6 +3,10 @@
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QDebug>
+#include <QNetworkProxyFactory>
+#include <QNetworkProxyQuery>
+#include <QUrl>
+#include <QNetworkProxy>
 
 namespace mcp_qt {
 
@@ -53,6 +57,24 @@ bool McpServerManager::loadConfig(const QJsonObject& configObject) {
         }
 
         QMap<QString, QString> processEnv;
+        
+        // 自动提取系统代理并注入给子进程
+        QList<QNetworkProxy> proxies = QNetworkProxyFactory::systemProxyForQuery(QNetworkProxyQuery(QUrl(QStringLiteral("https://www.google.com"))));
+        if (!proxies.isEmpty()) {
+            QNetworkProxy proxy = proxies.first();
+            if (proxy.type() == QNetworkProxy::HttpProxy || proxy.type() == QNetworkProxy::Socks5Proxy) {
+                QString proxyStr = QStringLiteral("%1://%2:%3")
+                    .arg(proxy.type() == QNetworkProxy::HttpProxy ? QStringLiteral("http") : QStringLiteral("socks5"))
+                    .arg(proxy.hostName())
+                    .arg(proxy.port());
+                processEnv.insert(QStringLiteral("HTTP_PROXY"), proxyStr);
+                processEnv.insert(QStringLiteral("HTTPS_PROXY"), proxyStr);
+                processEnv.insert(QStringLiteral("http_proxy"), proxyStr);
+                processEnv.insert(QStringLiteral("https_proxy"), proxyStr);
+                qDebug() << "Injected system proxy into child process environment:" << proxyStr;
+            }
+        }
+
         if (serverCfg.contains(QStringLiteral("env")) && serverCfg.value(QStringLiteral("env")).isObject()) {
             QJsonObject envs = serverCfg.value(QStringLiteral("env")).toObject();
             for (auto envIt = envs.begin(); envIt != envs.end(); ++envIt) {
@@ -64,7 +86,7 @@ bool McpServerManager::loadConfig(const QJsonObject& configObject) {
                 } else if (envIt.value().isBool()) {
                     envVal = envIt.value().toBool() ? QStringLiteral("true") : QStringLiteral("false");
                 }
-                processEnv.insert(envIt.key(), envVal);
+                processEnv.insert(envIt.key(), envVal); // 用户自定义 env 覆盖自动提取的代理
             }
         }
 
