@@ -1,8 +1,6 @@
 #include "RunnerConfig.h"
 #include <mcp_qt_client/McpQtClient.h>
 #include <mcp_qt_transport/QtHttpSseTransport.h>
-#include <mcp_core/McpClientSession.h>
-#include <mcp_core/HttpSseTransport.h>
 #include <QTimer>
 
 namespace mcp_conformance {
@@ -70,7 +68,7 @@ int runElicitationDefaults(const RunnerConfig& c) {
     QJsonObject ec; ec["form"] = QJsonObject{{"applyDefaults", true}};
     cl->registerCapability("elicitation", ec);
 
-    // 预置 handler（connectToTransportAndWait 中会在 start/initialize 前安装到 session）
+    // 预置 handler（connectToTransportAndWait 中会在 start/initialize 前安装 to session）
     cl->setElicitationHandler([](const QJsonObject&, std::function<void(const QJsonObject&, const QJsonObject&)> callback) {
         QJsonObject r; r["action"] = "accept"; r["content"] = QJsonObject{};
         callback(r, QJsonObject{});
@@ -95,19 +93,33 @@ int runElicitationDefaults(const RunnerConfig& c) {
     return hasError ? 1 : 0;
 }
 
-// ========== Auth 场景（HttpSseTransport / 内建完整 OAuth，235/235 已验证）==========
+// ========== Auth 场景（McpQtClient + QtHttpSseTransport，无 libcurl）==========
 
-static int _ra(const RunnerConfig& c, bool ct) {
-    auto t = std::make_shared<mcp::HttpSseTransport>(c.serverUrl);
-    auto s = std::make_shared<mcp::McpClientSession>(t);
-    if (!c.protocolVersion.empty()) s->setProtocolVersion(c.protocolVersion);
-    s->init(); if (!s->start()) return 1;
-    nlohmann::json si; if (!s->initializeSync("mcp-conformance-client-cpp","1.0.0",&si)) return 1;
-    nlohmann::json e; s->listToolsSync(std::chrono::milliseconds(10000),&e); if (!e.empty()) return 1;
-    if (ct) { nlohmann::json ce; s->callToolSync("test-tool",nlohmann::json::object(),&ce,std::chrono::milliseconds(15000)); if (!ce.empty()) return 1; }
+static int _raQt(const RunnerConfig& c, bool ct) {
+    auto cl = mcp_qt::McpQtClient::createForTest();
+    auto t = std::make_shared<mcp_qt::QtHttpSseTransport>(c.serverUrl);
+    QString errStr;
+    // 使用 connectToTransportAndWait 自动进行 initialize 握手与 Auth 认证逻辑
+    if (!cl->connectToTransportAndWait(t, "mcp-qt-client", "1.0.0", 15000, &errStr)) return 1;
+    
+    QEventLoop loop;
+    bool hasError = false;
+    cl->listToolsAsync("", [&](const std::vector<mcp_qt::McpQtTool>&, const QString&, const QString& err) {
+        hasError = !err.isEmpty();
+        loop.quit();
+    });
+    QTimer::singleShot(10000, &loop, &QEventLoop::quit);
+    loop.exec();
+    if (hasError) return 1;
+    
+    if (ct) {
+        auto res = cl->callTool("test-tool", QJsonObject{});
+        if (res.isError) return 1;
+    }
     return 0;
 }
-int runAuthFlow(const RunnerConfig& c) { return _ra(c, true); }
-int runClientCredentialsFlow(const RunnerConfig& c) { return _ra(c, false); }
+
+int runAuthFlow(const RunnerConfig& c) { return _raQt(c, true); }
+int runClientCredentialsFlow(const RunnerConfig& c) { return _raQt(c, false); }
 
 } // namespace mcp_conformance

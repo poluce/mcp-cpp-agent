@@ -1,4 +1,4 @@
-#include "mcp_core/ConsoleStdioTransport.h"
+#include "ConsoleStdioTransport.h"
 #include <iostream>
 
 namespace mcp {

@@ -1,7 +1,7 @@
 #pragma once
 #include <thread>
 #include <atomic>
-#include "IMcpTransport.h"
+#include <mcp_core/IMcpTransport.h>
 
 namespace mcp {
 

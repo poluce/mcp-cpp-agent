@@ -1,6 +1,6 @@
 #include "RunnerConfig.h"
 
-#include <mcp_core/ConsoleStdioTransport.h>
+#include "ConsoleStdioTransport.h"
 #include <mcp_core/McpClientSession.h>
 
 namespace mcp_conformance {

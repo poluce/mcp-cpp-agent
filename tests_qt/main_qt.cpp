@@ -1,8 +1,8 @@
 #include "tests/common.h"
-#include <iostream>
-#include <QCoreApplication>
 
-// 声明 Qt 传输层的所有测试函数
+#include <QCoreApplication>
+#include <iostream>
+
 void test_qt_sse_parser_reads_multiline_data();
 void test_qt_sse_parser_reads_retry();
 void test_qt_sse_parser_reads_crlf_events();
@@ -24,6 +24,12 @@ void test_qt_resource_router();
 void test_qt_tools_model();
 void test_qt_transport_recovery();
 void test_qt_server_manager_router();
+void test_qt_stateless_http_transport_basic();
+void test_qt_stateless_http_transport_headers();
+void test_multi_server_agent_selector_prefers_search_tool();
+void test_multi_server_agent_diagnostics_groups_entries_by_stage();
+void test_multi_server_agent_session_reports_no_tools();
+void test_multi_server_agent_session_reports_unsafe_arguments_before_call();
 
 int main(int argc, char* argv[]) {
     QCoreApplication app(argc, argv);
@@ -53,6 +59,10 @@ int main(int argc, char* argv[]) {
     TM_RUN_TEST(test_qt_stateless_http_transport_basic);
     TM_RUN_TEST(test_qt_stateless_http_transport_headers);
     TM_RUN_TEST(test_qt_server_manager_router);
+    TM_RUN_TEST(test_multi_server_agent_selector_prefers_search_tool);
+    TM_RUN_TEST(test_multi_server_agent_diagnostics_groups_entries_by_stage);
+    TM_RUN_TEST(test_multi_server_agent_session_reports_no_tools);
+    TM_RUN_TEST(test_multi_server_agent_session_reports_unsafe_arguments_before_call);
 
     TmTestRunner::instance().printSummary();
     return TmTestRunner::instance().hasFailed() ? 1 : 0;
