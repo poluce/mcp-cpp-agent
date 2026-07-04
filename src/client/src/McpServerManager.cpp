@@ -3,10 +3,7 @@
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QDebug>
-#include <QNetworkProxyFactory>
-#include <QNetworkProxyQuery>
-#include <QUrl>
-#include <QNetworkProxy>
+#include <QPointer>
 
 namespace mcp_qt {
 
@@ -57,24 +54,8 @@ bool McpServerManager::loadConfig(const QJsonObject& configObject) {
         }
 
         QMap<QString, QString> processEnv;
-        
-        // 自动提取系统代理并注入给子进程
-        QList<QNetworkProxy> proxies = QNetworkProxyFactory::systemProxyForQuery(QNetworkProxyQuery(QUrl(QStringLiteral("https://www.google.com"))));
-        if (!proxies.isEmpty()) {
-            QNetworkProxy proxy = proxies.first();
-            if (proxy.type() == QNetworkProxy::HttpProxy || proxy.type() == QNetworkProxy::Socks5Proxy) {
-                QString proxyStr = QStringLiteral("%1://%2:%3")
-                    .arg(proxy.type() == QNetworkProxy::HttpProxy ? QStringLiteral("http") : QStringLiteral("socks5"))
-                    .arg(proxy.hostName())
-                    .arg(proxy.port());
-                processEnv.insert(QStringLiteral("HTTP_PROXY"), proxyStr);
-                processEnv.insert(QStringLiteral("HTTPS_PROXY"), proxyStr);
-                processEnv.insert(QStringLiteral("http_proxy"), proxyStr);
-                processEnv.insert(QStringLiteral("https_proxy"), proxyStr);
-                qDebug() << "Injected system proxy into child process environment:" << proxyStr;
-            }
-        }
 
+        // 注意：系统代理已由 QtProcessStdioTransport 自动探测注入，此处仅处理用户自定义 env
         if (serverCfg.contains(QStringLiteral("env")) && serverCfg.value(QStringLiteral("env")).isObject()) {
             QJsonObject envs = serverCfg.value(QStringLiteral("env")).toObject();
             for (auto envIt = envs.begin(); envIt != envs.end(); ++envIt) {
@@ -182,8 +163,25 @@ void McpServerManager::closeAll(int timeoutMs) {
 }
 
 void McpServerManager::setupClientSignals(const QString& serverName, const std::shared_ptr<McpQtClient>& client) {
-    connect(client.get(), &McpQtClient::connected, this, [this, serverName]() {
+    connect(client.get(), &McpQtClient::connected, this, [this, serverName, client]() {
         emit clientConnected(serverName);
+
+        // 连接即预热：自动拉取全部工具并缓存
+        if (client->cachedTools().empty()) {
+            m_pendingFetchCount.fetch_add(1);
+            QPointer<McpServerManager> safeThis(this);
+            client->fetchAllToolsAsync([safeThis, serverName, weakClient = std::weak_ptr<McpQtClient>(client)](const std::vector<McpQtTool>& tools) {
+                if (!safeThis) return; // Manager 已销毁，安全退出
+                int remaining = safeThis->m_pendingFetchCount.fetch_sub(1) - 1;
+                qInfo().noquote() << "[McpServerManager]" << serverName << "预热完成:" << tools.size() << "个工具";
+                emit safeThis->clientToolsReady(serverName, static_cast<int>(tools.size()));
+                if (remaining <= 0) {
+                    emit safeThis->allToolsReady();
+                }
+            });
+        } else {
+            emit clientToolsReady(serverName, static_cast<int>(client->cachedTools().size()));
+        }
     });
     connect(client.get(), &McpQtClient::disconnected, this, [this, serverName]() {
         emit clientDisconnected(serverName);
@@ -197,6 +195,36 @@ void McpServerManager::setupClientSignals(const QString& serverName, const std::
     connect(client.get(), &McpQtClient::promptsChanged, this, [this, serverName]() {
         emit clientPromptsChanged(serverName);
     });
+}
+
+bool McpServerManager::isAllToolsReady() const {
+    return m_pendingFetchCount.load() <= 0;
+}
+
+void McpServerManager::startHeartbeat(int intervalMs) {
+    if (!m_heartbeatTimer) {
+        m_heartbeatTimer = new QTimer(this);
+        connect(m_heartbeatTimer, &QTimer::timeout, this, [this]() {
+            for (auto it = m_clients.begin(); it != m_clients.end(); ++it) {
+                const auto& name = it.key();
+                const auto& c = it.value();
+                if (!c || !c->isConnected()) continue;
+                // 异步 ping，失败时 client 的 auto-reconnect 机制会自动触发
+                c->pingAsync([name](bool success, const QString& error) {
+                    if (!success) {
+                        qWarning().noquote() << "[McpServerManager] Heartbeat ping failed for" << name << ":" << error;
+                    }
+                });
+            }
+        });
+    }
+    m_heartbeatTimer->start(intervalMs);
+}
+
+void McpServerManager::stopHeartbeat() {
+    if (m_heartbeatTimer) {
+        m_heartbeatTimer->stop();
+    }
 }
 
 } // namespace mcp_qt

@@ -202,8 +202,14 @@ public:
     /// 获取当前缓存在客户端中的所有工具列表（不触发网络请求）
     std::vector<McpQtTool> cachedTools() const;
 
-    /// 异步获取工具列表
+    /// 异步获取工具列表（单页）
     void listToolsAsync(const QString& cursor, std::function<void(const std::vector<McpQtTool>& tools, const QString& nextCursor, const QString& error)> callback);
+
+    /// 异步拉取所有工具（自动分页），完成后触发 toolsReady 信号
+    void fetchAllToolsAsync();
+
+    /// 异步拉取所有工具（自动分页），完成后触发回调
+    void fetchAllToolsAsync(std::function<void(const std::vector<McpQtTool>& tools)> callback);
 
     /// 创建工具列表 Model（需调用方自行管理 Model 生命周期）
     /// 返回的 McpToolsModel 已绑定当前 client，可直接调用 refresh() 填充数据
@@ -256,7 +262,13 @@ public:
     QJsonObject exportToolToLlmFormat(const QString& name, LlmFormat format = LlmFormat::OpenAI) const;
 
     /// 将当前缓存的所有工具定义导出为指定 LLM 格式的 JSON 数组
+    /// 注意：返回值已被整体格式化为 LLM 专有结构（如 OpenAI 的 {"type":"function","function":{...}}），
+    /// 调用方可直接赋值给 API 请求的 tools 字段，无需额外包裹。
     QJsonArray exportAllToolsToLlmFormat(LlmFormat format = LlmFormat::OpenAI) const;
+
+    /// 将当前缓存的所有工具定义导出为标准 MCP Schema 格式（仅含 name/description/inputSchema）
+    /// 适用于业务方需要自行组装 LLM 专有结构的场景
+    QJsonArray exportAllToolsAsMcpSchema() const;
 
     // ========== 并发多工具调用 ==========
     /// 异步并发调用多个工具，所有调用完成（或超时）后触发回调
@@ -411,6 +423,8 @@ signals:
     void notificationReceived(const QString& method, const QJsonObject& params);
     // 协议规范事件：服务端列表变更通知
     void toolsChanged(const std::vector<mcp_qt::McpQtTool>& newTools);
+    /// fetchAllToolsAsync() 完成时触发，传递全量工具列表
+    void toolsReady(const std::vector<mcp_qt::McpQtTool>& tools);
     void resourcesChanged();
     void promptsChanged();
 
@@ -521,7 +535,15 @@ private:
     void replayQueuedRequests();
     bool isReplayableMethod(const QString& method) const;
 
+    // 析构时触发所有挂起的 fetchAllToolsAsync 回调，防止调用方永久等待
+    void fireAllPendingFetchCallbacks();
+
     nlohmann::json m_clientCapabilities;
+
+    // 挂起的 fetchAllToolsAsync 回调（析构时强制触发，正常完成时通过 ID 注销）
+    mutable std::mutex m_pendingFetchMutex;
+    std::unordered_map<uint64_t, std::function<void()>> m_pendingFetchCallbacks;
+    std::atomic<uint64_t> m_nextFetchId{1};
 
     template <typename Initiator>
     bool runSyncWithTimeout(Initiator&& initiator, int timeoutMs);

@@ -15,7 +15,7 @@ struct AgentRunOptions {
     QString task;
     QString serverFilter;
     int timeoutMs{30000};
-    
+
     // LLM 配置
     bool useRealLlm{false};
     QString apiUrl;
@@ -33,7 +33,6 @@ public:
                  QObject* parent = nullptr);
 
     void start(const AgentRunOptions& options);
-    void runAgainstCurrentClients(const QString& task, const QString& serverFilter, int timeoutMs);
     void continueConversation(const QString& task, const QString& serverFilter = "");
     mcp_agent::LlmAgentExecutor* executor() const { return m_executor; }
 
@@ -41,7 +40,7 @@ signals:
     void finished(int exitCode);
 
 private:
-    void beginRunAgainstCurrentClients(const QString& task, const QString& serverFilter);
+    void runTask(const QString& task);
     void finishWithError(const QString& stage, const QString& message, const QString& suggestion);
     void finishSuccessfully(const QString& message);
 
@@ -49,11 +48,11 @@ private:
     std::shared_ptr<mcp_agent::ILlmBackend> m_llmBackend;
     DiagnosticReporter* m_reporter{nullptr};
     mcp_qt::McpToolRouter m_router;
-    
+
     mcp_agent::LlmAgentExecutor* m_executor{nullptr};
-    
+
     int m_timeoutMs{30000};
     bool m_finished{false};
-    bool m_runStarted{false};
+    bool m_taskStarted{false};
     QTimer* m_watchdogTimer{nullptr};
 };

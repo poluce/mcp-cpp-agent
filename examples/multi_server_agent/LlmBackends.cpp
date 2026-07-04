@@ -170,20 +170,7 @@ void OpenAiLlmBackend::requestDecision(
 
     // 2. 将 MCP SDK 暴露的可用工具动态翻译给大模型
     if (!availableTools.isEmpty()) {
-        QJsonArray tools;
-        for (int i = 0; i < availableTools.size(); ++i) {
-            QJsonObject tObj = availableTools[i].toObject();
-            QJsonObject func;
-            func["name"] = tObj["name"].toString();
-            func["description"] = tObj["description"].toString();
-            func["parameters"] = tObj["inputSchema"].toObject();
-
-            QJsonObject tool;
-            tool["type"] = "function";
-            tool["function"] = func;
-            tools.append(tool);
-        }
-        body["tools"] = tools;
+        body["tools"] = availableTools;
     }
 
     QNetworkRequest request(m_apiUrl);
@@ -196,7 +183,8 @@ void OpenAiLlmBackend::requestDecision(
     connect(reply, &QNetworkReply::finished, this, [reply, callback]() {
         reply->deleteLater();
         if (reply->error() != QNetworkReply::NoError) {
-            callback(false, LlmDecision{}, reply->errorString());
+            QString errorBody = QString::fromUtf8(reply->readAll());
+            callback(false, LlmDecision{}, reply->errorString() + "\nResponse: " + errorBody);
             return;
         }
 

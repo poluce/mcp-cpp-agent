@@ -1,5 +1,5 @@
 {
-    "logFile": "F:\\B_My_Document\\GitHub\\mcp-cpp-agent\\examples\\multi_server_agent\\persistent_test.log",
+    "logFile": "D:\\github\\mcp-cpp-agent\\examples\\multi_server_agent\\persistent_test.log",
     "mcpServers": {
         "anysearch": {
             "args": [
@@ -13,7 +13,7 @@
         },
         "mock-search-server": {
             "args": [
-                "F:/B_My_Document/GitHub/mcp-cpp-agent/examples/multi_server_agent/mock_search_server.js"
+                "D:/github/mcp-cpp-agent/examples/multi_server_agent/mock_search_server.js"
             ],
             "command": "node"
         },

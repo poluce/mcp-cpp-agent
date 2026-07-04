@@ -255,7 +255,13 @@ void QtHttpSseWorker::handleSseError(QNetworkReply::NetworkError) {
     if (!m_sseReply) {
         return;
     }
-    emit transportError(m_sseReply->errorString());
+    // 提取 HTTP Response Body 以提供详细错误信息（如 401 返回的 JSON 错误详情）
+    QString errMsg = m_sseReply->errorString();
+    QByteArray errorBody = m_sseReply->peek(m_sseReply->bytesAvailable());
+    if (!errorBody.isEmpty()) {
+        errMsg += QStringLiteral("\nResponse Body: ") + QString::fromUtf8(errorBody);
+    }
+    emit transportError(errMsg);
 }
 
 void QtHttpSseWorker::handleSseEvent(const QtSseEvent& event) {
@@ -342,7 +348,13 @@ bool QtHttpSseWorker::postMessage(const QString& payload, int retryCount) {
                 postMessage(payload, retryCount + 1);
                 return;
             }
-            emit transportError(QString("HTTP %1: Post message authentication failed").arg(statusCode));
+            // 提取 Response Body 以提供详细认证失败原因
+            QString errMsg = QString("HTTP %1: Post message authentication failed").arg(statusCode);
+            QByteArray authErrBody = reply->readAll();
+            if (!authErrBody.isEmpty()) {
+                errMsg += QStringLiteral("\nResponse Body: ") + QString::fromUtf8(authErrBody);
+            }
+            emit transportError(errMsg);
             reply->deleteLater();
             return;
         }
@@ -375,7 +387,13 @@ bool QtHttpSseWorker::postMessage(const QString& payload, int retryCount) {
         reply->deleteLater();
     });
     connect(reply, &QNetworkReply::errorOccurred, this, [this, reply](QNetworkReply::NetworkError) {
-        emit transportError(reply->errorString());
+        // 提取 HTTP Response Body 以提供详细错误信息（如 400/401/403 返回的 JSON 错误详情）
+        QString errMsg = reply->errorString();
+        QByteArray errorBody = reply->readAll();
+        if (!errorBody.isEmpty()) {
+            errMsg += QStringLiteral("\nResponse Body: ") + QString::fromUtf8(errorBody);
+        }
+        emit transportError(errMsg);
     });
 
     return true;

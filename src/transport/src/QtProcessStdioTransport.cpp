@@ -1,5 +1,8 @@
 #include "mcp_qt_transport/QtProcessStdioTransport.h"
 #include <QDebug>
+#include <QNetworkProxyFactory>
+#include <QNetworkProxyQuery>
+#include <QUrl>
 #include <string_view>
 
 namespace mcp_qt {
@@ -58,13 +61,39 @@ bool QtProcessStdioTransport::start() {
     }
 #endif
     
-    if (!m_env.empty()) {
-        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-        for (const auto& kv : m_env) {
-            env.insert(QString::fromStdString(kv.first), QString::fromStdString(kv.second));
+    // 构建进程环境变量：先注入系统代理，再叠加用户自定义配置
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+
+    // 自动探测系统 HTTP/SOCKS5 代理并注入（仅当用户未手动指定任何代理变量时）
+    {
+        bool userHasProxy = m_env.count("HTTP_PROXY") || m_env.count("http_proxy")
+                         || m_env.count("HTTPS_PROXY") || m_env.count("https_proxy");
+
+        if (!userHasProxy) {
+            QList<QNetworkProxy> proxies = QNetworkProxyFactory::systemProxyForQuery(
+                QNetworkProxyQuery(QUrl(QStringLiteral("https://www.google.com"))));
+            if (!proxies.isEmpty()) {
+                const QNetworkProxy& proxy = proxies.first();
+                if (proxy.type() == QNetworkProxy::HttpProxy || proxy.type() == QNetworkProxy::Socks5Proxy) {
+                    QString proxyStr = QStringLiteral("%1://%2:%3")
+                        .arg(proxy.type() == QNetworkProxy::HttpProxy ? QStringLiteral("http") : QStringLiteral("socks5"))
+                        .arg(proxy.hostName())
+                        .arg(proxy.port());
+                    env.insert(QStringLiteral("HTTP_PROXY"), proxyStr);
+                    env.insert(QStringLiteral("HTTPS_PROXY"), proxyStr);
+                    env.insert(QStringLiteral("http_proxy"), proxyStr);
+                    env.insert(QStringLiteral("https_proxy"), proxyStr);
+                    qDebug() << "[QtProcessStdioTransport] Auto-detected system proxy:" << proxyStr;
+                }
+            }
         }
-        m_process->setProcessEnvironment(env);
     }
+
+    // 叠加用户自定义环境变量（会覆盖上面自动注入的同名变量）
+    for (const auto& kv : m_env) {
+        env.insert(QString::fromStdString(kv.first), QString::fromStdString(kv.second));
+    }
+    m_process->setProcessEnvironment(env);
     
     QStringList qargs;
     for (const auto& a : m_args) qargs.push_back(QString::fromStdString(a));
@@ -178,17 +207,9 @@ void QtProcessStdioTransport::handleReadyReadStandardOutput() {
 
 void QtProcessStdioTransport::handleReadyReadStandardError() {
     QByteArray data = m_process->readAllStandardError();
-    std::string errStr(data.constData(), data.size());
-    std::function<void(const std::string&)> errCb;
-    {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        errCb = m_onError;
-    }
-    if (errCb) {
-        errCb(errStr);
-    } else {
-        qDebug() << "[MCP Server stderr]" << data;
-    }
+    // stderr 是服务端日志通道，不是传输层故障 —— 通过 serverLog 信号向上报告
+    // 使用 fromLocal8Bit 兼容 Windows GBK 等本地编码（MCP 规范建议 UTF-8，但 Windows 子进程未必遵守）
+    emit serverLog(QString::fromLocal8Bit(data));
 }
 
 void QtProcessStdioTransport::handleProcessFinished(int exitCode, QProcess::ExitStatus exitStatus) {

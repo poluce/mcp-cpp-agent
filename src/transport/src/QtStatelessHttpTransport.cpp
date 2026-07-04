@@ -55,7 +55,12 @@ void QtStatelessHttpTransport::onReplyFinished(QNetworkReply* reply) {
     if (!m_isRunning) return;
 
     if (reply->error() != QNetworkReply::NoError) {
+        // 提取 HTTP Response Body 以提供详细错误信息（如 {"error": "Invalid 'tools[0]..."}）
         QString errorMsg = QString("HTTP POST failed: %1").arg(reply->errorString());
+        QByteArray errorBody = reply->readAll();
+        if (!errorBody.isEmpty()) {
+            errorMsg += QStringLiteral("\nResponse Body: ") + QString::fromUtf8(errorBody);
+        }
         if (m_onError) {
             m_onError(errorMsg.toStdString());
         }

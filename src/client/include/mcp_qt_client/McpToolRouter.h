@@ -29,7 +29,12 @@ public:
     // 获取所有服务器的工具，并自动加上命名空间前缀
     // nameSpacedToolName 的生成规则为： serverName + "_" + toolName
     // 支持指定 LLM 格式输出（OpenAI, Anthropic, Gemini）
+    // 注意：返回值已被整体格式化为 LLM 专有结构，调用方可直接赋值给 API 请求的 tools 字段，无需额外包裹。
     QJsonArray exportAllToolsToLlmFormat(McpQtClient::LlmFormat format = McpQtClient::LlmFormat::OpenAI) const;
+
+    // 获取所有服务器的工具（标准 MCP Schema 格式，仅含 name/description/inputSchema）
+    // 适用于业务方需要自行组装 LLM 专有结构的场景
+    QJsonArray exportAllToolsAsMcpSchema() const;
 
     // 路由并调用命名空间工具 (返回 QFuture)
     QFuture<McpResult> callToolFuture(const QString& nameSpacedToolName, const QJsonObject& arguments);

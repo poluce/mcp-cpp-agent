@@ -35,6 +35,7 @@ private:
     void applyTheme();
     void updateServerList();
     void appendLogHtml(const QString& html);
+    void loadAndConnectServers(const QString& configPath);
 
     // 控件定义
     QLineEdit* m_configPathEdit{nullptr};
@@ -49,6 +50,7 @@ private:
     QPushButton* m_fetchModelsBtn{nullptr};
     
     QListWidget* m_serverListWidget{nullptr};
+    QTextEdit* m_serverLogConsole{nullptr};  // 服务端 stderr 日志面板
     QTextEdit* m_logBlackboard{nullptr};
     
     QLineEdit* m_taskInputEdit{nullptr};

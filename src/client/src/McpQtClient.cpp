@@ -321,7 +321,22 @@ McpQtClient::McpQtClient(QObject* p)
         }
     });
 }
-McpQtClient::~McpQtClient(){close();}
+McpQtClient::~McpQtClient() {
+    // 先触发所有挂起的 fetchAllToolsAsync 回调，防止调用方永久等待
+    fireAllPendingFetchCallbacks();
+    close();
+}
+
+void McpQtClient::fireAllPendingFetchCallbacks() {
+    std::unordered_map<uint64_t, std::function<void()>> pending;
+    {
+        std::lock_guard<std::mutex> lock(m_pendingFetchMutex);
+        pending.swap(m_pendingFetchCallbacks);
+    }
+    for (auto& [id, cb] : pending) {
+        cb();
+    }
+}
 
 McpQtClient::Ptr McpQtClient::connectHttpAndWait(const QString& url,const QString& name,const QString& ver,int to, QString* err){
     auto c=Ptr(new McpQtClient());
@@ -436,10 +451,19 @@ void McpQtClient::setupTransportCommon(std::shared_ptr<mcp::IMcpTransport> t) {
         QString errStr = QString::fromStdString(err);
         QMetaObject::invokeMethod(this, [this, errStr]() {
             emit errorOccurred(errStr);
-            // 🌟 核心修复：日常的 stderr 输出不代表连接物理断开，注释 handleTransportFailure() 防止无限重启死循环崩溃
-            // handleTransportFailure();
+            // stderr 已由 QtProcessStdioTransport::serverLog 信号单独处理，
+            // 此处 onError 仅在真正的传输层故障时触发，可安全恢复重连
+            handleTransportFailure();
         }, Qt::QueuedConnection);
     });
+
+    // 如果底层是 Stdio 子进程传输，连接 serverLog 信号以接收服务端日志
+    auto* processTransport = dynamic_cast<QtProcessStdioTransport*>(t.get());
+    if (processTransport) {
+        QObject::connect(processTransport, &QtProcessStdioTransport::serverLog, this, [](const QString& msg) {
+            qDebug().noquote() << "[MCP Server Log]" << msg.trimmed();
+        }, Qt::QueuedConnection);
+    }
     m_session->setNotificationCallback([this](const std::string& method, const nlohmann::json& params) {
         QString methodStr = QString::fromStdString(method);
         emit notificationReceived(methodStr, _qj(params));
@@ -979,6 +1003,20 @@ QJsonArray McpQtClient::exportAllToolsToLlmFormat(LlmFormat format) const {
     QJsonArray arr;
     for (auto it = m_toolCache.begin(); it != m_toolCache.end(); ++it) {
         arr.append(exportToolToLlmFormat(it->second, format));
+    }
+    return arr;
+}
+
+QJsonArray McpQtClient::exportAllToolsAsMcpSchema() const {
+    QJsonArray arr;
+    for (auto it = m_toolCache.begin(); it != m_toolCache.end(); ++it) {
+        QJsonObject obj;
+        obj[QStringLiteral("name")] = it->second.name;
+        if (!it->second.description.isEmpty()) {
+            obj[QStringLiteral("description")] = it->second.description;
+        }
+        obj[QStringLiteral("inputSchema")] = ensureValidSchema(it->second.inputSchema);
+        arr.append(obj);
     }
     return arr;
 }
@@ -1941,17 +1979,28 @@ void McpQtClient::refreshToolsAfterRecovery() {
 }
 
 void McpQtClient::refreshToolsCacheAsync() {
+    constexpr int kMaxPages = 50;
     struct Helper {
-        static void fetchPage(QPointer<McpQtClient> safeClient, QString cursor, std::shared_ptr<std::vector<McpQtTool>> accumulated) {
+        static void fetchPage(QPointer<McpQtClient> safeClient, QString cursor,
+                              std::shared_ptr<std::vector<McpQtTool>> accumulated, int depth) {
             if (!safeClient) return;
-            safeClient->listToolsAsync(cursor, [safeClient, accumulated](const std::vector<McpQtTool>& tools, const QString& nextCursor, const QString& error) {
+            if (depth >= kMaxPages) {
+                qWarning() << "[McpQtClient] refreshToolsCacheAsync: exceeded max pages (" << kMaxPages << "), aborting pagination";
+                safeClient->m_toolCache.clear();
+                for (const auto& t : *accumulated) {
+                    safeClient->m_toolCache[t.name] = t;
+                }
+                emit safeClient->toolsChanged(*accumulated);
+                return;
+            }
+            safeClient->listToolsAsync(cursor, [safeClient, accumulated, depth](const std::vector<McpQtTool>& tools, const QString& nextCursor, const QString& error) {
                 if (!safeClient) return;
                 if (!error.isEmpty()) {
                     return;
                 }
                 accumulated->insert(accumulated->end(), tools.begin(), tools.end());
                 if (!nextCursor.isEmpty()) {
-                    fetchPage(safeClient, nextCursor, accumulated);
+                    fetchPage(safeClient, nextCursor, accumulated, depth + 1);
                 } else {
                     safeClient->m_toolCache.clear();
                     for (const auto& t : *accumulated) {
@@ -1964,7 +2013,142 @@ void McpQtClient::refreshToolsCacheAsync() {
     };
 
     auto accumulated = std::make_shared<std::vector<McpQtTool>>();
-    Helper::fetchPage(QPointer<McpQtClient>(this), QStringLiteral(""), accumulated);
+    Helper::fetchPage(QPointer<McpQtClient>(this), QStringLiteral(""), accumulated, 0);
+}
+
+void McpQtClient::fetchAllToolsAsync() {
+    constexpr int kMaxPages = 50;
+    struct Helper {
+        static void fetchPage(QPointer<McpQtClient> safeClient, QString cursor,
+                              std::shared_ptr<std::vector<McpQtTool>> accumulated,
+                              std::shared_ptr<std::once_flag> doneFlag,
+                              uint64_t fetchId, int depth) {
+            if (!safeClient) return;
+            if (depth >= kMaxPages) {
+                qWarning() << "[McpQtClient] fetchAllToolsAsync: exceeded max pages (" << kMaxPages << "), aborting pagination";
+                fireDone(safeClient, accumulated, doneFlag, fetchId);
+                return;
+            }
+            safeClient->listToolsAsync(cursor, [safeClient, accumulated, doneFlag, fetchId, depth](const std::vector<McpQtTool>& tools, const QString& nextCursor, const QString& error) {
+                if (!safeClient) return;
+                if (!error.isEmpty()) {
+                    qWarning() << "[McpQtClient] fetchAllToolsAsync page error:" << error;
+                    return;
+                }
+                accumulated->insert(accumulated->end(), tools.begin(), tools.end());
+                if (!nextCursor.isEmpty()) {
+                    fetchPage(safeClient, nextCursor, accumulated, doneFlag, fetchId, depth + 1);
+                } else {
+                    fireDone(safeClient, accumulated, doneFlag, fetchId);
+                }
+            });
+        }
+
+        static void fireDone(QPointer<McpQtClient> safeClient,
+                             std::shared_ptr<std::vector<McpQtTool>> accumulated,
+                             std::shared_ptr<std::once_flag> doneFlag,
+                             uint64_t fetchId) {
+            std::call_once(*doneFlag, [safeClient, accumulated, fetchId]() {
+                if (safeClient) {
+                    // 任务已完成，注销兜底回调，释放捕获的 accumulated 内存
+                    {
+                        std::lock_guard<std::mutex> lock(safeClient->m_pendingFetchMutex);
+                        safeClient->m_pendingFetchCallbacks.erase(fetchId);
+                    }
+                    for (const auto& t : *accumulated) {
+                        safeClient->m_toolCache[t.name] = t;
+                    }
+                    emit safeClient->toolsReady(*accumulated);
+                }
+            });
+        }
+    };
+
+    auto accumulated = std::make_shared<std::vector<McpQtTool>>();
+    auto doneFlag = std::make_shared<std::once_flag>();
+    uint64_t fetchId = m_nextFetchId.fetch_add(1);
+
+    // 注册析构时兜底回调：客户端被销毁时强制触发
+    auto safeThis = QPointer<McpQtClient>(this);
+    auto rescueCb = [safeThis, accumulated, doneFlag, fetchId]() {
+        Helper::fireDone(safeThis, accumulated, doneFlag, fetchId);
+    };
+    {
+        std::lock_guard<std::mutex> lock(m_pendingFetchMutex);
+        m_pendingFetchCallbacks[fetchId] = std::move(rescueCb);
+    }
+
+    Helper::fetchPage(QPointer<McpQtClient>(this), QStringLiteral(""), accumulated, doneFlag, fetchId, 0);
+}
+
+void McpQtClient::fetchAllToolsAsync(std::function<void(const std::vector<McpQtTool>&)> callback) {
+    constexpr int kMaxPages = 50;
+    struct Helper {
+        static void fetchPage(QPointer<McpQtClient> safeClient, QString cursor,
+                              std::shared_ptr<std::vector<McpQtTool>> accumulated,
+                              std::shared_ptr<std::function<void(const std::vector<McpQtTool>&)>> cb,
+                              std::shared_ptr<std::once_flag> doneFlag,
+                              uint64_t fetchId, int depth) {
+            if (!safeClient) return;
+            if (depth >= kMaxPages) {
+                qWarning() << "[McpQtClient] fetchAllToolsAsync: exceeded max pages (" << kMaxPages << "), aborting pagination";
+                fireDone(safeClient, accumulated, cb, doneFlag, fetchId);
+                return;
+            }
+            safeClient->listToolsAsync(cursor, [safeClient, accumulated, cb, doneFlag, fetchId, depth](const std::vector<McpQtTool>& tools, const QString& nextCursor, const QString& error) {
+                if (!safeClient) return;
+                if (!error.isEmpty()) {
+                    qWarning() << "[McpQtClient] fetchAllToolsAsync page error:" << error;
+                    fireDone(safeClient, accumulated, cb, doneFlag, fetchId);
+                    return;
+                }
+                accumulated->insert(accumulated->end(), tools.begin(), tools.end());
+                if (!nextCursor.isEmpty()) {
+                    fetchPage(safeClient, nextCursor, accumulated, cb, doneFlag, fetchId, depth + 1);
+                } else {
+                    fireDone(safeClient, accumulated, cb, doneFlag, fetchId);
+                }
+            });
+        }
+
+        static void fireDone(QPointer<McpQtClient> safeClient,
+                             std::shared_ptr<std::vector<McpQtTool>> accumulated,
+                             std::shared_ptr<std::function<void(const std::vector<McpQtTool>&)>> cb,
+                             std::shared_ptr<std::once_flag> doneFlag,
+                             uint64_t fetchId) {
+            std::call_once(*doneFlag, [safeClient, accumulated, cb, fetchId]() {
+                if (safeClient) {
+                    // 任务已完成，注销兜底回调，释放捕获的 accumulated 内存
+                    {
+                        std::lock_guard<std::mutex> lock(safeClient->m_pendingFetchMutex);
+                        safeClient->m_pendingFetchCallbacks.erase(fetchId);
+                    }
+                    for (const auto& t : *accumulated) {
+                        safeClient->m_toolCache[t.name] = t;
+                    }
+                    emit safeClient->toolsReady(*accumulated);
+                }
+                if (*cb) (*cb)(*accumulated);
+            });
+        }
+    };
+
+    auto accumulated = std::make_shared<std::vector<McpQtTool>>();
+    auto cb = std::make_shared<std::function<void(const std::vector<McpQtTool>&)>>(std::move(callback));
+    auto doneFlag = std::make_shared<std::once_flag>();
+    uint64_t fetchId = m_nextFetchId.fetch_add(1);
+
+    // 注册析构时兜底回调：客户端被销毁时强制触发
+    auto safeThis = QPointer<McpQtClient>(this);
+    auto rescueCb = [safeThis, accumulated, cb, doneFlag, fetchId]() {
+        Helper::fireDone(safeThis, accumulated, cb, doneFlag, fetchId);
+    };
+    {
+        std::lock_guard<std::mutex> lock(m_pendingFetchMutex);
+        m_pendingFetchCallbacks[fetchId] = std::move(rescueCb);
+    }
+
+    Helper::fetchPage(QPointer<McpQtClient>(this), QStringLiteral(""), accumulated, cb, doneFlag, fetchId, 0);
 }
 
 void McpQtClient::replayQueuedRequests() {

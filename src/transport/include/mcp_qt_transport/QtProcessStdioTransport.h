@@ -30,6 +30,10 @@ public:
     void setOnError(std::function<void(const std::string&)> callback) override;
     void setProtocolVersion(const std::string& version) override;
 
+signals:
+    /// 子进程 stderr 输出（服务端日志），与 onError（传输层故障）分离
+    void serverLog(const QString& message);
+
 private slots:
     void handleReadyReadStandardOutput();
     void handleReadyReadStandardError();

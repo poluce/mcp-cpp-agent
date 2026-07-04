@@ -95,6 +95,8 @@ AgentMainWindow::AgentMainWindow(QWidget* parent)
             g_logFilePath = savedLogFile;
             m_logPathEdit->setText(QDir::toNativeSeparators(savedLogFile));
         }
+
+        loadAndConnectServers(m_configPathEdit->text());
     }
 
     // 如果命令行已经显式传递了日志路径（优先级最高），则覆盖填充
@@ -215,13 +217,21 @@ void AgentMainWindow::initUi() {
     auto* displayLayout = new QHBoxLayout();
     displayLayout->setSpacing(12);
 
-    // 左侧：服务器状态监控
+    // 左侧：服务器状态 + 服务端日志
     auto* leftLayout = new QVBoxLayout();
-    auto* srvLabel = new QLabel(QStringLiteral("MCP 服务端状态监控:"), this);
+    auto* srvLabel = new QLabel(QStringLiteral("MCP 服务端状态:"), this);
     m_serverListWidget = new QListWidget(this);
     m_serverListWidget->setMaximumWidth(220);
     leftLayout->addWidget(srvLabel);
     leftLayout->addWidget(m_serverListWidget);
+
+    auto* logConsoleLabel = new QLabel(QStringLiteral("服务端日志 (stderr):"), this);
+    m_serverLogConsole = new QTextEdit(this);
+    m_serverLogConsole->setReadOnly(true);
+    m_serverLogConsole->setMaximumHeight(180);
+    m_serverLogConsole->setPlaceholderText(QStringLiteral("服务端子进程的 stderr 输出将显示在这里..."));
+    leftLayout->addWidget(logConsoleLabel);
+    leftLayout->addWidget(m_serverLogConsole);
     displayLayout->addLayout(leftLayout, 1);
 
     // 右侧：ReAct 执行看板
@@ -362,6 +372,8 @@ void AgentMainWindow::handleBrowseConfig() {
             m_logPathEdit->clear();
             g_logFilePath.clear();
         }
+        
+        loadAndConnectServers(path);
     }
 }
 
@@ -419,6 +431,7 @@ void AgentMainWindow::handleRunTask() {
 
     m_isRunning = true;
     m_runBtn->setEnabled(false);
+    m_runBtn->setText(QStringLiteral("⏳ 连接预热中..."));
     m_taskInputEdit->setEnabled(false);
     m_configPathEdit->setEnabled(false);
     m_browseBtn->setEnabled(false);
@@ -442,18 +455,6 @@ void AgentMainWindow::handleRunTask() {
     // 初始化黑板日志
     m_logBlackboard->clear();
     appendLogHtml(QStringLiteral("<h2 style='color: #ff9500; font-family: Segoe UI, Microsoft YaHei; margin: 0 0 10px 0;'>⚡ ReAct 执行环路初始化中...</h2>"));
-    appendLogHtml(QStringLiteral("<div style='color: #6c757d; font-family: Segoe UI, Microsoft YaHei; margin-bottom: 12px;'>正在从配置文件中加载 MCP 服务端...</div>"));
-
-    // 重置 MCP Server Manager
-    if (m_manager) {
-        m_manager->deleteLater();
-    }
-    m_manager = new mcp_qt::McpServerManager(this);
-    m_serverListWidget->clear();
-
-    // 绑定连接监听以刷新左侧列表
-    connect(m_manager, &mcp_qt::McpServerManager::clientConnected, this, &AgentMainWindow::updateServerList);
-    connect(m_manager, &mcp_qt::McpServerManager::clientErrorOccurred, this, &AgentMainWindow::updateServerList);
 
     // 实例化 LLM 驱动
     if (m_modeCombo->currentIndex() == 1) {
@@ -502,18 +503,17 @@ void AgentMainWindow::updateServerList() {
     m_serverListWidget->clear();
     if (!m_manager) return;
 
-    QStringList allNames = m_manager->serverNames();
-    for (const auto& name : allNames) {
+    for (const auto& name : m_manager->serverNames()) {
         auto client = m_manager->client(name);
         bool connected = client && client->isConnected();
+        int toolCount = connected ? static_cast<int>(client->cachedTools().size()) : 0;
 
-        QString indicator = connected ? QStringLiteral("🟢 在线 - ") : QStringLiteral("🔴 离线 - ");
-        auto* item = new QListWidgetItem(indicator + name);
-        if (connected) {
-            item->setForeground(QBrush(QColor("#28a745")));
-        } else {
-            item->setForeground(QBrush(QColor("#dc3545")));
-        }
+        QString label = connected
+            ? QString("🟢 %1 (%2 tools)").arg(name).arg(toolCount)
+            : QString("🔴 %1").arg(name);
+
+        auto* item = new QListWidgetItem(label);
+        item->setForeground(QBrush(connected ? QColor("#28a745") : QColor("#dc3545")));
         m_serverListWidget->addItem(item);
     }
 }
@@ -653,12 +653,6 @@ void AgentMainWindow::handleResetSession() {
     delete m_reporter;
     m_reporter = nullptr;
 
-    if (m_manager) {
-        m_manager->deleteLater();
-        m_manager = nullptr;
-    }
-    m_serverListWidget->clear();
-
     m_logBlackboard->clear();
     m_logBlackboard->setHtml(QStringLiteral("<h3 style='color: #8e8e93; font-family: Segoe UI, Microsoft YaHei;'>会话已重置。新对话已就绪，请输入您的任务指令并点击启动...</h3>"));
     
@@ -750,6 +744,48 @@ void AgentMainWindow::handleFetchModels() {
 void AgentMainWindow::appendLogHtml(const QString& html) {
     m_logBlackboard->append(html);
     m_logBlackboard->verticalScrollBar()->setValue(m_logBlackboard->verticalScrollBar()->maximum());
+}
+
+void AgentMainWindow::loadAndConnectServers(const QString& configPath) {
+    if (m_manager) {
+        m_manager->deleteLater();
+    }
+    m_manager = new mcp_qt::McpServerManager(this);
+    m_serverListWidget->clear();
+    m_serverLogConsole->clear();
+
+    connect(m_manager, &mcp_qt::McpServerManager::clientConnected, this, &AgentMainWindow::updateServerList);
+    connect(m_manager, &mcp_qt::McpServerManager::clientErrorOccurred, this, &AgentMainWindow::updateServerList);
+
+    connect(m_manager, &mcp_qt::McpServerManager::clientConnected, this, [this](const QString& name) {
+        appendLogHtml(QString("<div style='color:#34c759;'>🟢 %1 已连接，正在预热工具...</div>").arg(name.toHtmlEscaped()));
+    });
+    connect(m_manager, &mcp_qt::McpServerManager::clientToolsReady, this, [this](const QString& name, int count) {
+        appendLogHtml(QString("<div style='color:#007aff;'>🔧 %1 预热完成: %2 个工具</div>").arg(name.toHtmlEscaped()).arg(count));
+        updateServerList();
+    });
+    connect(m_manager, &mcp_qt::McpServerManager::allToolsReady, this, [this]() {
+        if (!m_isRunning && !m_sessionActive) {
+            m_runBtn->setEnabled(true);
+            m_runBtn->setText(QStringLiteral("⚡ 启动 Agent 任务"));
+        }
+    });
+
+    connect(m_manager, &mcp_qt::McpServerManager::clientConnected, this, [this](const QString& name) {
+        auto client = m_manager->client(name);
+        if (!client) return;
+        connect(client.get(), &mcp_qt::McpQtClient::errorOccurred, this, [this, name](const QString& msg) {
+            m_serverLogConsole->append(QString("[%1] %2").arg(name, msg));
+        });
+    });
+
+    appendLogHtml(QStringLiteral("<div style='color: #6c757d;'>正在加载配置文件并启动 MCP 服务端进程...</div>"));
+    if (!m_manager->loadConfigFile(configPath)) {
+        appendLogHtml(QStringLiteral("<div style='color: red;'>加载配置文件失败！</div>"));
+    }
+
+    // 开启 30 秒一次的保活心跳，自动检测断连并触发重连
+    m_manager->startHeartbeat(30000);
 }
 
 } // namespace mcp_agent

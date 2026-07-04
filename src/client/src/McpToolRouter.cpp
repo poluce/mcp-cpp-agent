@@ -11,7 +11,7 @@ QPair<QString, QString> McpToolRouter::parseToolName(const QString& nameSpacedTo
     if (!m_manager) {
         return {};
     }
-    
+
     // 遍历所有已注册的 serverNames 尝试进行前缀匹配
     // 这种做法可兼容 serverName 中包含 "_" 字符的情况
     QStringList servers = m_manager->serverNames();
@@ -22,7 +22,7 @@ QPair<QString, QString> McpToolRouter::parseToolName(const QString& nameSpacedTo
             return {serverName, originalToolName};
         }
     }
-    
+
     // 后备方案：以第一个 "_" 为界进行分割
     int index = nameSpacedToolName.indexOf(QStringLiteral("_"));
     if (index > 0) {
@@ -32,7 +32,7 @@ QPair<QString, QString> McpToolRouter::parseToolName(const QString& nameSpacedTo
             return {serverName, originalToolName};
         }
     }
-    
+
     return {};
 }
 
@@ -52,6 +52,27 @@ QJsonArray McpToolRouter::exportAllToolsToLlmFormat(McpQtClient::LlmFormat forma
             McpQtTool modifiedTool = tool;
             modifiedTool.name = serverName + QStringLiteral("_") + tool.name;
             result.append(McpQtClient::exportToolToLlmFormat(modifiedTool, format));
+        }
+    }
+    return result;
+}
+
+QJsonArray McpToolRouter::exportAllToolsAsMcpSchema() const {
+    QJsonArray result;
+    if (!m_manager) return result;
+
+    auto clientsMap = m_manager->clients();
+    for (auto it = clientsMap.begin(); it != clientsMap.end(); ++it) {
+        QString serverName = it.key();
+        auto client = it.value();
+        if (!client) continue;
+
+        // 直接复用底层 Client 已封装好的 Schema 数组，保留所有合规性校验（ensureValidSchema）
+        QJsonArray clientTools = client->exportAllToolsAsMcpSchema();
+        for (int i = 0; i < clientTools.size(); ++i) {
+            QJsonObject obj = clientTools[i].toObject();
+            obj[QStringLiteral("name")] = serverName + QStringLiteral("_") + obj[QStringLiteral("name")].toString();
+            result.append(obj);
         }
     }
     return result;
