@@ -58,7 +58,7 @@ private:
     QList<LlmMessage> m_history;
     std::function<void(const QString& name, const QJsonObject& args, std::function<void(mcp_qt::McpResult)>)> m_toolDispatcher;
 
-    int m_maxSteps{30};
+    int m_maxSteps{200};
     int m_currentStep{0};
 
     QString m_diagApiUrl;

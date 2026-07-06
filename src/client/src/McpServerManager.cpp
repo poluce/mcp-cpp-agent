@@ -75,12 +75,31 @@ bool McpServerManager::loadConfig(const QJsonObject& configObject) {
         if (!processEnv.isEmpty()) {
             builder.setEnvironment(processEnv);
         }
+
+        QMap<QString, QString> httpHeaders;
+        if (serverCfg.contains(QStringLiteral("headers")) && serverCfg.value(QStringLiteral("headers")).isObject()) {
+            QJsonObject hdrs = serverCfg.value(QStringLiteral("headers")).toObject();
+            for (auto hdrIt = hdrs.begin(); hdrIt != hdrs.end(); ++hdrIt) {
+                if (hdrIt.value().isString()) {
+                    httpHeaders.insert(hdrIt.key(), hdrIt.value().toString());
+                }
+            }
+        }
+        if (!httpHeaders.isEmpty()) {
+            builder.setHttpHeaders(httpHeaders);
+        }
+
         bool hasTransport = false;
 
         // 2. 根据是 url 还是 command 建立 transport
         if (serverCfg.contains(QStringLiteral("url"))) {
             QString url = serverCfg.value(QStringLiteral("url")).toString();
-            builder.setTransportHttp(url);
+            QString type = serverCfg.value(QStringLiteral("type")).toString();
+            if (type == QStringLiteral("stateless_http")) {
+                builder.setTransportStatelessHttp(url);
+            } else {
+                builder.setTransportHttp(url);
+            }
             hasTransport = true;
         } else if (serverCfg.contains(QStringLiteral("command"))) {
             QString command = serverCfg.value(QStringLiteral("command")).toString();

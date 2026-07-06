@@ -19,3 +19,4 @@ Desktop.ini
 .DS_Store
 build_sdk
 build_*
+.playwright*

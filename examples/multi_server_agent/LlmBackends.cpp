@@ -140,6 +140,9 @@ void OpenAiLlmBackend::requestDecision(
         // 如果是 assistant 执行了工具调用，拼装 tool_calls，避开 HTTP 400 Bad Request
         if (msg.role == QStringLiteral("assistant") && !msg.toolCallId.isEmpty()) {
             mObj["content"] = msg.content;
+            if (!msg.reasoningContent.isEmpty()) {
+                mObj["reasoning_content"] = msg.reasoningContent;
+            }
             
             QJsonArray toolCallsArr;
             QJsonObject toolCallObj;
@@ -156,6 +159,9 @@ void OpenAiLlmBackend::requestDecision(
             mObj["tool_calls"] = toolCallsArr;
         } else {
             mObj["content"] = msg.content;
+            if (msg.role == QStringLiteral("assistant") && !msg.reasoningContent.isEmpty()) {
+                mObj["reasoning_content"] = msg.reasoningContent;
+            }
         }
         
         if (msg.role == QStringLiteral("tool") && !msg.toolCallId.isEmpty()) {
@@ -200,6 +206,9 @@ void OpenAiLlmBackend::requestDecision(
         QJsonObject message = choices[0].toObject()["message"].toObject();
         LlmDecision dec;
         dec.thought = message["content"].toString();
+        if (message.contains("reasoning_content")) {
+            dec.reasoningContent = message["reasoning_content"].toString();
+        }
 
         QJsonArray toolCalls = message["tool_calls"].toArray();
         if (!toolCalls.isEmpty()) {

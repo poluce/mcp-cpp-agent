@@ -40,13 +40,13 @@ void AgentSession::start(const AgentRunOptions& options) {
     m_finished = false;
     m_taskStarted = false;
 
-    // 看门狗
-    m_watchdogTimer = new QTimer(this);
-    m_watchdogTimer->setSingleShot(true);
-    connect(m_watchdogTimer, &QTimer::timeout, this, [this]() {
-        if (!m_finished) finishWithError("lifecycle", "Agent run timed out", "Check network or tool blocking");
-    });
-    m_watchdogTimer->start(options.timeoutMs * 6);
+    // 看门狗（根据要求已禁用全局超时限制）
+    // m_watchdogTimer = new QTimer(this);
+    // m_watchdogTimer->setSingleShot(true);
+    // connect(m_watchdogTimer, &QTimer::timeout, this, [this]() {
+    //     if (!m_finished) finishWithError("lifecycle", "Agent run timed out", "Check network or tool blocking");
+    // });
+    // m_watchdogTimer->start(options.timeoutMs * 6);
 
     // 不再这里加载配置。由 AgentMainWindow 提前加载。
     // 如果已经准备好了，直接返回就绪，否则等待信号

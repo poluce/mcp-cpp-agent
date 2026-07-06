@@ -112,6 +112,7 @@ void LlmAgentExecutor::nextStep(
         LlmMessage assistantMsg;
         assistantMsg.role = "assistant";
         assistantMsg.content = dec.thought;
+        assistantMsg.reasoningContent = dec.reasoningContent;
         if (dec.isToolCall) {
             assistantMsg.toolCallId = dec.toolCallId;
             assistantMsg.toolName = dec.toolName;

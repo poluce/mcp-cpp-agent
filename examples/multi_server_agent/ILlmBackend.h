@@ -14,12 +14,14 @@ struct LlmDecision {
     QString toolName;
     QJsonObject toolArguments;
     QString thought;
+    QString reasoningContent;
     QString finalAnswer;
 };
 
 struct LlmMessage {
     QString role; // "system", "user", "assistant", "tool"
     QString content;
+    QString reasoningContent;
     QString toolCallId; // 供 OpenAI 协议关联使用
     QString name;       // 标识 tool 名字
     

@@ -252,7 +252,6 @@ void AgentMainWindow::initUi() {
     auto* runLayout = new QHBoxLayout();
     m_taskInputEdit = new QLineEdit(this);
     m_taskInputEdit->setPlaceholderText(QStringLiteral("在此输入您想让 Agent 执行的任务（例如：\"search for test\" 或 \"search for AI news and take a screenshot\"）..."));
-    m_taskInputEdit->setText(QStringLiteral("search for test"));
     
     m_runBtn = new QPushButton(QStringLiteral("⚡ 启动 Agent 任务"), this);
     m_runBtn->setMinimumWidth(150);
@@ -415,6 +414,7 @@ void AgentMainWindow::handleRunTask() {
         QMessageBox::warning(this, QStringLiteral("警告"), QStringLiteral("任务指令描述不能为空！"));
         return;
     }
+    m_taskInputEdit->clear();
 
     // 🌟 将日志输出位置保存到 examples_config.json 中
     writeLogFileToConfig(configPath, g_logFilePath);
