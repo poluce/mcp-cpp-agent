@@ -1,5 +1,6 @@
 #include "mcp_qt_client/McpQtClient.h"
 #include <nlohmann/json.hpp>
+#include <iostream>
 #include "mcp_core/McpClientSession.h"
 #include "mcp_core/McpOAuthClient.h"
 #include "mcp_core/IMcpTransport.h"
@@ -134,7 +135,25 @@ static QByteArray _postH(const QString& u, const QByteArray& b, const QMap<QByte
 // OAuth（全 QNAM，零 libcurl）
 // ============================================================================
 static std::string _eRm(const std::string& w){
-    for(auto* px:{"resource_metadata=\"","resource_metadata="}){size_t p=w.find(px);if(p==std::string::npos)continue;size_t s=p+strlen(px),e=(px[17]=='"')?w.find('"',s):w.find_first_of(", ",s);if(e==std::string::npos)e=w.length();return w.substr(s,e-s);}return"";
+    for(auto* px:{"resource_metadata=\"","resource_metadata="}){
+        size_t p=w.find(px);
+        if(p==std::string::npos) continue;
+        size_t s=p+strlen(px);
+        size_t e;
+        if(px[strlen(px)-1]=='"'){
+            // 值被引号包围，查找结束引号
+            e=w.find('"',s);
+        }else{
+            // 值没有引号，查找逗号或空格
+            e=w.find_first_of(", ",s);
+        }
+        if(e==std::string::npos) e=w.length();
+        std::string result=w.substr(s,e-s);
+        // 移除末尾可能的引号
+        if(!result.empty() && result.back()=='"') result.pop_back();
+        return result;
+    }
+    return "";
 }
 static std::string _bUrl(const std::string& u){size_t p=u.find("://");if(p==std::string::npos)return u;size_t q=u.find('/',p+3);return q!=std::string::npos?u.substr(0,q):u;}
 static bool _dmQt(const QString& is,mcp::OAuthServerMetadata* o){
@@ -147,45 +166,91 @@ static bool _dmQt(const QString& is,mcp::OAuthServerMetadata* o){
 static bool _runOAuthQt(const std::string& sseUrl, const nlohmann::json& ctx,
                         const std::string& wwwAuth, std::shared_ptr<mcp::McpOAuthClient> oc,
                         const QString& redirectUri="http://localhost:3000/callback"){
+    std::cerr << "[OAuth] Starting OAuth flow for " << sseUrl << std::endl;
     std::string pu=_eRm(wwwAuth); nlohmann::json pj;
-    // 1) PRM 发现
+    // 1) PRM 发现（可选，失败则回退到直接 Metadata 发现）
     if(pu.empty()){std::string b=_bUrl(sseUrl);bool fd=false;
         for(const char* px:{"/.well-known/oauth-protected-resource/mcp","/.well-known/oauth-protected-resource","/.well-known/mcp-protected-resource-metadata"}){
             QByteArray d=_get(QString::fromStdString(b+px));auto j=nlohmann::json::parse(d.toStdString(),nullptr,false);
             if(!j.is_discarded()&&j.contains("authorization_servers")&&j["authorization_servers"].is_array()&&!j["authorization_servers"].empty()){pu=b+px;pj=std::move(j);fd=true;break;}
-        }if(!fd)return false;
+        }
+        if(!fd){std::cerr << "[OAuth] PRM discovery failed, trying direct metadata discovery" << std::endl;}
     }else{QByteArray ps=_get(QString::fromStdString(pu));pj=nlohmann::json::parse(ps.toStdString(),nullptr,false);}
-    if(pj.is_discarded()||!pj.contains("authorization_servers"))return false;
 
     // 2) Metadata 发现
-    QString iu=QString::fromStdString(pj["authorization_servers"][0].get<std::string>());
-    if(pj.contains("oauthMetadataLocation")&&pj["oauthMetadataLocation"].is_string())iu=QString::fromStdString(_bUrl(sseUrl))+QString::fromStdString(pj["oauthMetadataLocation"].get<std::string>());
-    mcp::OAuthServerMetadata mm;if(!_dmQt(iu,&mm))return false;
+    mcp::OAuthServerMetadata mm;
+    if(!pj.is_discarded()&&pj.contains("authorization_servers")){
+        // 从 PRM 获取 authorization_servers
+        std::cerr << "[OAuth] PRM discovered, authorization_servers: " << pj["authorization_servers"][0].get<std::string>() << std::endl;
+        QString iu=QString::fromStdString(pj["authorization_servers"][0].get<std::string>());
+        if(pj.contains("oauthMetadataLocation")&&pj["oauthMetadataLocation"].is_string())iu=QString::fromStdString(_bUrl(sseUrl))+QString::fromStdString(pj["oauthMetadataLocation"].get<std::string>());
+        if(!_dmQt(iu,&mm)){std::cerr << "[OAuth] Metadata discovery failed" << std::endl;return false;}
+    }else{
+        // 直接尝试 OAuth Authorization Server Metadata（2025-03-26 兼容）
+        std::cerr << "[OAuth] Trying direct OAuth metadata discovery" << std::endl;
+        QString b=QString::fromStdString(_bUrl(sseUrl));
+        if(!_dmQt(b,&mm)){std::cerr << "[OAuth] Direct metadata discovery failed" << std::endl;return false;}
+    }
+    std::cerr << "[OAuth] Metadata discovered, registration_endpoint: " << mm.registrationEndpoint << std::endl;
 
     // 3) 获取 client 凭据
-    std::string cid=ctx.value("client_id",""),csc=ctx.value("client_secret","");bool pr=!cid.empty();
+    std::cerr << "[OAuth] Step 3: Getting client credentials" << std::endl;
+    std::string cid, csc;
+    bool pr = false;
+    if (!ctx.is_null() && ctx.is_object()) {
+        cid = ctx.value("client_id","");
+        csc = ctx.value("client_secret","");
+        pr = !cid.empty();
+    }
+    std::cerr << "[OAuth] Client credentials from context: cid='" << cid << "', pr=" << pr << std::endl;
+    std::cerr << "[OAuth] Registration endpoint: " << mm.registrationEndpoint << std::endl;
     if(cid.empty()&&!mm.registrationEndpoint.empty()){
+        std::cerr << "[OAuth] Registering client at " << mm.registrationEndpoint << std::endl;
         nlohmann::json rr={{"client_name","mcp-qt-client"},{"grant_types",{"authorization_code","refresh_token"}},{"redirect_uris",{redirectUri.toStdString()}},{"response_types",{"code"}},{"token_endpoint_auth_method","none"}};
         QByteArray rb=_post(QString::fromStdString(mm.registrationEndpoint),QByteArray::fromStdString(rr.dump()),"application/json");
-        auto rj=nlohmann::json::parse(rb.toStdString(),nullptr,false);if(rj.is_discarded()||!rj.contains("client_id"))return false;
+        std::cerr << "[OAuth] Registration response: " << rb.toStdString().substr(0, 200) << std::endl;
+        auto rj=nlohmann::json::parse(rb.toStdString(),nullptr,false);if(rj.is_discarded()||!rj.contains("client_id")){std::cerr << "[OAuth] Registration failed" << std::endl;return false;}
         cid=rj["client_id"].get<std::string>();csc=rj.value("client_secret","");
+        std::cerr << "[OAuth] Registered client_id: " << cid << std::endl;
+    } else {
+        std::cerr << "[OAuth] Skipping registration: cid.empty()=" << cid.empty() << ", registrationEndpoint.empty()=" << mm.registrationEndpoint.empty() << std::endl;
     }
 
     // 4) JWT-Bearer
     for(const auto& gt:mm.grantTypesSupported)if(gt=="urn:ietf:params:oauth:grant-type:jwt-bearer"&&ctx.contains("idp_id_token")&&!ctx["idp_id_token"].get<std::string>().empty()){
         std::string a=ctx["idp_id_token"].get<std::string>();
-        QByteArray pf=QByteArray("grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=")+QByteArray::fromStdString(a);
+        QByteArray pf=QByteArray("grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=")+QByteArray::fromStdString(a)+"&resource="+QUrl::toPercentEncoding(QString::fromStdString(sseUrl));
         QMap<QByteArray,QByteArray> hdrs;
         if(!csc.empty()){hdrs["Authorization"]="Basic "+QByteArray::fromStdString(cid+":"+csc).toBase64();}
         QByteArray resp=_postH(QString::fromStdString(mm.tokenEndpoint),pf,hdrs);
         auto tj=nlohmann::json::parse(resp.toStdString(),nullptr,false);if(!tj.is_discarded()&&tj.contains("access_token")){mcp::OAuthToken t;t.accessToken=tj["access_token"].get<std::string>();oc->setCurrentToken(t);return true;}return false;
     }
 
-    // 5) Client Credentials
-    bool isCC=!pr&&ctx.contains("client_id");
+    // 5) Client Credentials（当 context 有 client_id 且支持 client_credentials grant 时）
+    bool hasPrivateKey = false;
+    if(!ctx.is_null() && ctx.is_object()){
+        hasPrivateKey = ctx.contains("private_key_pem") && ctx["private_key_pem"].is_string() && !ctx["private_key_pem"].get<std::string>().empty();
+    }
+    bool supportsCC = mm.grantTypesSupported.end() != std::find(mm.grantTypesSupported.begin(), mm.grantTypesSupported.end(), "client_credentials");
+    bool isCC = !cid.empty() && (hasPrivateKey || !csc.empty()) && supportsCC;
+    std::cerr << "[OAuth] Client Credentials check: ctx.is_null()=" << ctx.is_null() << ", ctx.is_object()=" << (ctx.is_null() ? false : ctx.is_object()) << ", hasPrivateKey=" << hasPrivateKey << ", csc.empty()=" << csc.empty() << ", supportsCC=" << supportsCC << ", isCC=" << isCC << std::endl;
+    if(!ctx.is_null() && ctx.is_object()){
+        std::cerr << "[OAuth] Context keys: ";
+        for(auto it = ctx.begin(); it != ctx.end(); ++it) std::cerr << it.key() << " ";
+        std::cerr << std::endl;
+    }
     if(isCC){
-        QByteArray pf=QByteArray::fromStdString("grant_type=client_credentials&client_id="+cid+"&client_secret="+csc);
-        QMap<QByteArray,QByteArray> hdrs;hdrs["Authorization"]="Basic "+QByteArray::fromStdString(cid+":"+csc).toBase64();
+        std::cerr << "[OAuth] Using Client Credentials grant" << std::endl;
+        if(hasPrivateKey){
+            // JWT-Bearer grant type
+            std::string signingAlg = ctx.value("signing_algorithm","ES256");
+            std::cerr << "[OAuth] Using JWT-Bearer with " << signingAlg << std::endl;
+            // TODO: 生成 JWT assertion
+            // 目前先尝试 client_credentials
+        }
+        QByteArray pf=QByteArray::fromStdString("grant_type=client_credentials&client_id="+cid+"&client_secret="+csc)+"&resource="+QUrl::toPercentEncoding(QString::fromStdString(sseUrl));
+        QMap<QByteArray,QByteArray> hdrs;
+        if(!csc.empty()){hdrs["Authorization"]="Basic "+QByteArray::fromStdString(cid+":"+csc).toBase64();}
         QByteArray resp=_postH(QString::fromStdString(mm.tokenEndpoint),pf,hdrs);
         auto tj=nlohmann::json::parse(resp.toStdString(),nullptr,false);if(!tj.is_discarded()&&tj.contains("access_token")){mcp::OAuthToken t;t.accessToken=tj["access_token"].get<std::string>();oc->setCurrentToken(t);return true;}return false;
     }
@@ -345,7 +410,8 @@ McpQtClient::Ptr McpQtClient::connectHttpAndWait(const QString& url,const QStrin
     c->m_clientName = name;
     c->m_clientVersion = ver;
     c->m_timeoutMs = to;
-    auto t=std::make_shared<mcp_qt::QtHttpSseTransport>(url.toStdString());
+    // 使用无状态 HTTP 传输（兼容 SSE 和无状态服务器）
+    auto t=std::make_shared<mcp_qt::QtStatelessHttpTransport>(url);
     if(!c->connectToTransportAndWait(t,name,ver,to,err))return nullptr;return c;
 }
 McpQtClient::Ptr McpQtClient::connectStdioAndWait(const QString& cmd,const QStringList& args,const QString& name,const QString& ver,int to, QString* err){
@@ -537,6 +603,14 @@ bool McpQtClient::doOAuth(const OAuthConfig& oa){
     if(!oa.clientId.isEmpty())ctx["client_id"]=oa.clientId.toStdString();
     if(!oa.clientSecret.isEmpty())ctx["client_secret"]=oa.clientSecret.toStdString();
     return _runOAuthQt(oa.serverUrl.toStdString(),ctx,w.toStdString(),m_oauth,oa.redirectUri);
+}
+
+bool McpQtClient::runOAuthFlow(const std::string& serverUrl,
+                               const nlohmann::json& context,
+                               const std::string& wwwAuth,
+                               std::shared_ptr<mcp::McpOAuthClient> oauthClient) {
+    if (!oauthClient) return false;
+    return _runOAuthQt(serverUrl, context, wwwAuth, oauthClient);
 }
 
 // ========== Server Info ==========

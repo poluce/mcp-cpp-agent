@@ -167,3 +167,9 @@ QObject::connect(client.get(), &McpQtClient::recoveryFailed, [](const QString& m
 
 *   **编译器**：支持 C++17 或以上标准。
 *   **依赖组件**：Qt6::Core, Qt6::Network 以及内嵌的 nlohmann_json。
+
+---
+
+## 已知限制
+
+*   **JWT-Bearer Grant Type**：暂不支持 `urn:ietf:params:oauth:grant-type:jwt-bearer`（需要 `client_assertion` + ES256/RS256 签名）。相关 conformance 场景（`auth/client-credentials-jwt`）暂不通过。

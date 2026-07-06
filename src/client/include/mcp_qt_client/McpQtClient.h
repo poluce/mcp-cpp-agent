@@ -179,6 +179,15 @@ public:
                                 const QString& clientVersion = QStringLiteral("1.0.0"),
                                 int timeoutMs = 30000);
 
+    /// 获取 OAuth 客户端实例（用于外部设置 token provider）
+    std::shared_ptr<mcp::McpOAuthClient> oauthClient() const { return m_oauth; }
+
+    /// 执行 OAuth 流程（静态方法，供传输层调用）
+    static bool runOAuthFlow(const std::string& serverUrl,
+                            const nlohmann::json& context,
+                            const std::string& wwwAuth,
+                            std::shared_ptr<mcp::McpOAuthClient> oauthClient);
+
     // ========== Server Info ==========
 
     QJsonObject serverInfo() const;

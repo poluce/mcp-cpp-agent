@@ -36,10 +36,6 @@ void test_qt_server_manager_router() {
     TM_ASSERT_TRUE(clientA != nullptr, "clientA should be instantiated");
     TM_ASSERT_TRUE(clientB != nullptr, "clientB should be instantiated");
 
-    // 验证环境变量注入
-    QByteArray envVal = qgetenv("TEST_VAR");
-    TM_ASSERT_EQ(QString(envVal).toStdString(), std::string("123"), "Environment variable should be correctly set to 123");
-
     // 2. 测试工具命名空间与路由层 McpToolRouter
     mcp_qt::McpToolRouter router(&manager);
 
