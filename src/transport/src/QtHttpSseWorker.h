@@ -1,11 +1,12 @@
 #pragma once
 
 #include <QByteArray>
-#include <QElapsedTimer>
-#include <QNetworkReply>
 #include <QObject>
 #include <QPointer>
 #include <QTimer>
+#include <QUrl>
+#include <QNetworkReply>
+#include <QElapsedTimer>
 
 #include <functional>
 
@@ -43,7 +44,7 @@ private:
     void handleSseEvent(const QtSseEvent& event);
     void scheduleReconnect();
     QString currentBearerToken() const;
-    void applyCommonHeaders(class QNetworkRequest& request) const;
+    void flushPendingMessages();
 
     QString m_baseUrl;
     QString m_postUrl;
@@ -53,21 +54,21 @@ private:
     int m_retryMs{2000};
     int m_authRetryCount{0};
     static constexpr int kMaxAuthRetries = 3;
-    QElapsedTimer m_reconnectDeadline;
     QElapsedTimer m_lastDataTime;
+    QElapsedTimer m_lastHackTime;
     bool m_stopping{false};
     bool m_sseConnected{false};
     std::function<std::string()> m_tokenProvider;
     std::function<bool(const std::string&)> m_authRetryHandler;
     QtHttpRequestConfig m_requestConfig;
     class QNetworkAccessManager* m_network{nullptr};
-    QPointer<QNetworkReply> m_sseReply;
+    
+    QNetworkReply* m_sseReply{nullptr};
     QTimer* m_reconnectTimer{nullptr};
     QTimer* m_healthCheckTimer{nullptr};
     QtSseParser m_parser;
     bool m_endpointResolved{false};
     QStringList m_pendingMessages;
-    void flushPendingMessages();
 };
 
 } // namespace mcp_qt

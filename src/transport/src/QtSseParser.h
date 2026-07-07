@@ -15,9 +15,11 @@ class QtSseParser {
 public:
     using EventCallback = std::function<void(const QtSseEvent&)>;
     using RetryCallback = std::function<void(int)>;
+    using IdCallback = std::function<void(const std::string&)>;
 
     void setEventCallback(EventCallback callback);
     void setRetryCallback(RetryCallback callback);
+    void setIdCallback(IdCallback callback);
     void pushChunk(const std::string& chunk);
     void reset();
 
@@ -27,6 +29,7 @@ private:
     std::string m_buffer;
     EventCallback m_eventCallback;
     RetryCallback m_retryCallback;
+    IdCallback m_idCallback;
 };
 
 } // namespace mcp_qt

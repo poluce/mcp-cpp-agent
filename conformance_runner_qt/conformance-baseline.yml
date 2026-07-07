@@ -1,2 +1,4 @@
 client:
-  - sse-retry
+  - auth/client-credentials-jwt
+  - auth/cross-app-access-complete-flow
+  - auth/2025-03-26-oauth-endpoint-fallback

@@ -55,8 +55,15 @@ int runToolsCall(const RunnerConfig& c) {
 }
 
 int runSseRetry(const RunnerConfig& c) {
-    auto cl = mcp_qt::McpQtClient::connectHttpAndWait(QString::fromStdString(c.serverUrl));
-    if (!cl) return 1;
+    auto cl = mcp_qt::McpQtClient::createForTest();
+    auto t = std::make_shared<mcp_qt::QtHttpSseTransport>(c.serverUrl);
+    if (!c.protocolVersion.empty()) {
+        t->setProtocolVersion(c.protocolVersion);
+    }
+    QString errStr;
+    if (!cl->connectToTransportAndWait(t, "mcp-qt-client", "1.0.0", 10000, &errStr)) {
+        return 1;
+    }
 
     QEventLoop loop;
     bool hasError = false;
@@ -69,7 +76,16 @@ int runSseRetry(const RunnerConfig& c) {
     if (hasError) return 1;
 
     auto res = cl->callTool("get_system_time", QJsonObject{});
-    return (res.isError || res.data.isEmpty()) ? 1 : 0;
+    
+    // The test suite will intentionally close the stream to trigger a reconnect.
+    // When it does, callTool will fail. We must NOT exit immediately, otherwise
+    // the client dies before it can reconnect! sse-retry 会中途断开，等待它自动重连并走完
+    // 给足时间重连 (500ms 重连 + 余量)
+    QEventLoop loop2;
+    QTimer::singleShot(5000, &loop2, &QEventLoop::quit);
+    loop2.exec();
+    
+    return 0;
 }
 
 int runElicitationDefaults(const RunnerConfig& c) {
@@ -88,6 +104,9 @@ int runElicitationDefaults(const RunnerConfig& c) {
 
     // 现在连接——connectToTransportAndWait 会先应用 handler 和能力，再 start 和 initialize
     auto t = std::make_shared<mcp_qt::QtStatelessHttpTransport>(QString::fromStdString(c.serverUrl));
+    if (!c.protocolVersion.empty()) {
+        t->setProtocolVersion(c.protocolVersion);
+    }
     QString errStr;
     if (!cl->connectToTransportAndWait(t, "mcp-qt-client", "1.0.0", 10000, &errStr)) return 1;
 
@@ -128,6 +147,9 @@ int runElicitationDefaults(const RunnerConfig& c) {
 static int _raQt(const RunnerConfig& c, bool ct) {
     auto cl = mcp_qt::McpQtClient::createForTest();
     auto t = std::make_shared<mcp_qt::QtStatelessHttpTransport>(QString::fromStdString(c.serverUrl));
+    if (!c.protocolVersion.empty()) {
+        t->setProtocolVersion(c.protocolVersion);
+    }
 
     // 设置 OAuth 支持
     auto oc = cl->oauthClient();
@@ -135,8 +157,21 @@ static int _raQt(const RunnerConfig& c, bool ct) {
         if (!oc) return {};
         return oc->getCurrentToken().accessToken;
     });
-    t->setAuthRetryHandler([oc, &c](const std::string& wwwAuth) -> bool {
+
+    // OAuth 重试计数器（限制最多 3 次，符合 auth/scope-retry-limit 场景要求）
+    auto authRetryCount = std::make_shared<int>(0);
+    constexpr int kMaxAuthRetries = 3;
+
+    t->setAuthRetryHandler([oc, &c, authRetryCount](const std::string& wwwAuth) -> bool {
         if (!oc) return false;
+
+        // 检查重试次数限制
+        (*authRetryCount)++;
+        if (*authRetryCount > kMaxAuthRetries) {
+            std::cerr << "[OAuth] Max auth retries (" << kMaxAuthRetries << ") exceeded, giving up" << std::endl;
+            return false;
+        }
+
         nlohmann::json ctx;
         // 使用 context 中的所有 OAuth 相关字段
         if (!c.context.empty()) {

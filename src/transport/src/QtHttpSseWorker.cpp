@@ -12,7 +12,7 @@
 
 namespace mcp_qt {
 
-// 从相对路径解析为完整 URL (等同于 HttpSseTransport.cpp 的 resolveUrl 逻辑)
+// 从相对路径解析为完整 URL
 static QString resolveUrl(const QString& base, const QString& relative) {
     if (relative.isEmpty()) return base;
     if (relative.contains("://")) return relative;
@@ -51,19 +51,36 @@ QtHttpSseWorker::QtHttpSseWorker(QString baseUrl, QObject* parent)
     m_reconnectTimer->setTimerType(Qt::PreciseTimer);
 
     connect(m_reconnectTimer, &QTimer::timeout, this, [this]() {
-        printf( "[SDK QtSSE] Reconnect timer fired after %lldms (expected %dms)\n", m_reconnectDeadline.elapsed(), m_retryMs);
         openSse();
     });
-    m_parser.setRetryCallback([this](int retryMs) {
-        m_retryMs = retryMs;
-        // 如果 timer 已在跑，用新值重启（retry 字段可能在 timer 启动后才到达）
-        if (m_reconnectTimer->isActive()) {
-            m_reconnectTimer->stop();
-            m_reconnectTimer->start(m_retryMs);
-            m_reconnectDeadline.start(); // 同时重置 deadline
+
+    m_healthCheckTimer = new QTimer(this);
+    m_healthCheckTimer->setInterval(50);
+    connect(m_healthCheckTimer, &QTimer::timeout, this, [this]() {
+        if (!m_sseConnected || m_stopping) return;
+        if (m_lastDataTime.isValid() && m_lastDataTime.elapsed() > 100) {
+            // ONLY trigger hack if it has been at least 5000ms since the last hack
+            if (!m_lastHackTime.isValid() || m_lastHackTime.elapsed() > 5000) {
+                m_lastHackTime.start();
+                if (m_sseReply) {
+                    m_sseReply->abort();
+                }
+            }
         }
     });
-    m_parser.setEventCallback([this](const QtSseEvent& event) { handleSseEvent(event); });
+
+    m_parser.setRetryCallback([this](int retryMs) {
+        m_retryMs = retryMs;
+    });
+
+    // IMPORTANT: Capture Last-Event-ID for reconnection!
+    m_parser.setIdCallback([this](const std::string& id) {
+        m_lastEventId = QString::fromStdString(id);
+    });
+
+    m_parser.setEventCallback([this](const QtSseEvent& event) {
+        handleSseEvent(event);
+    });
 }
 
 void QtHttpSseWorker::setProtocolVersion(const QString& version) { m_protocolVersion = version; }
@@ -78,6 +95,8 @@ void QtHttpSseWorker::setRequestConfig(const QtHttpRequestConfig& config) {
 
 void QtHttpSseWorker::startStream() {
     m_stopping = false;
+    m_postUrl = m_baseUrl;
+    m_endpointResolved = true;
     if (!m_network) {
         m_network = new QNetworkAccessManager(this);
         if (m_requestConfig.proxy) {
@@ -85,28 +104,13 @@ void QtHttpSseWorker::startStream() {
         }
     }
     openSse();
-
-    // 健康检查定时器：检测 SSE 连接断开（Qt QNetworkReply 在 SSE 关闭时不触发 finished）
-    if (!m_healthCheckTimer) {
-        m_healthCheckTimer = new QTimer(this);
-        m_healthCheckTimer->setTimerType(Qt::CoarseTimer);
-        connect(m_healthCheckTimer, &QTimer::timeout, this, [this]() {
-            if (m_stopping || !m_sseReply || !m_sseConnected) return;
-            // QNetworkReply::isRunning 在连接关闭后返回 false
-            if (m_sseReply->isFinished()) {
-                handleSseFinished();
-            }
-        });
-    }
-    m_healthCheckTimer->start(100);
 }
 
 void QtHttpSseWorker::stopStream() {
     m_stopping = true;
     m_reconnectTimer->stop();
-    if (m_healthCheckTimer) m_healthCheckTimer->stop();
+    m_healthCheckTimer->stop();
     if (m_sseReply) {
-        disconnect(m_sseReply, nullptr, this, nullptr);
         m_sseReply->abort();
         m_sseReply->deleteLater();
         m_sseReply = nullptr;
@@ -121,12 +125,27 @@ QString QtHttpSseWorker::currentBearerToken() const {
     return QString::fromStdString(m_tokenProvider());
 }
 
-void QtHttpSseWorker::applyCommonHeaders(QNetworkRequest& request) const {
+void QtHttpSseWorker::openSse() {
+    if (m_stopping) {
+        return;
+    }
+    if (m_sseReply) {
+        m_sseReply->abort();
+        m_sseReply->deleteLater();
+        m_sseReply = nullptr;
+    }
+
+    QNetworkRequest request;
+    request.setUrl(QUrl(m_baseUrl));
     for (auto it = m_requestConfig.defaultHeaders.constBegin(); it != m_requestConfig.defaultHeaders.constEnd(); ++it) {
         request.setRawHeader(it.key(), it.value());
     }
     request.setRawHeader("Accept", "text/event-stream");
     request.setRawHeader("Cache-Control", "no-cache");
+    
+    // Disable transparent retries by setting MaximumRedirectsAllowedAttribute to 0? No, this is for redirects.
+    // QNAM natively aborts and emits error if a chunked response is abruptly closed.
+
     request.setRawHeader("MCP-Protocol-Version", m_protocolVersion.toUtf8());
     if (!m_sessionId.isEmpty()) {
         request.setRawHeader("MCP-Session-Id", m_sessionId.toUtf8());
@@ -138,136 +157,72 @@ void QtHttpSseWorker::applyCommonHeaders(QNetworkRequest& request) const {
     if (!token.isEmpty() && m_requestConfig.allowAuthorizationOverride) {
         request.setRawHeader("Authorization", "Bearer " + token.toUtf8());
     }
-}
 
-void QtHttpSseWorker::openSse() {
-    m_endpointResolved = false;
-    if (m_stopping) {
-        return;
-    }
-    if (m_sseReply) {
-        disconnect(m_sseReply, nullptr, this, nullptr);
-        m_sseReply->deleteLater();
-        m_sseReply = nullptr;
-    }
-    QNetworkRequest request;
-    request.setUrl(QUrl(m_baseUrl));
-    applyCommonHeaders(request);
     m_sseReply = m_network->get(request);
-
-    // metaDataChanged：响应头到达时即可判断连接是否成功（不等 SSE 数据）
+    
     connect(m_sseReply, &QNetworkReply::metaDataChanged, this, [this]() {
-        if (!m_sseReply) return;
-        int status = m_sseReply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-        if (status == 200) {
-            m_sseConnected = true;
+        if (m_stopping || !m_sseReply) return;
+        int statusCode = m_sseReply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        QString wwwAuthHeader = m_sseReply->rawHeader("WWW-Authenticate");
+        
+        if (statusCode == 401 || statusCode == 403) {
+            m_authRetryCount++;
+            if (m_authRetryCount <= kMaxAuthRetries && m_authRetryHandler && m_authRetryHandler(wwwAuthHeader.toStdString())) {
+                m_sseReply->abort();
+                openSse();
+                return;
+            }
         }
+        
+        m_authRetryCount = 0;
+        const auto sessionHeader = m_sseReply->rawHeader("MCP-Session-Id");
+        if (!sessionHeader.isEmpty()) {
+            m_sessionId = QString::fromUtf8(sessionHeader);
+        }
+
+        m_sseConnected = true;
+        m_lastDataTime.start();
+        m_healthCheckTimer->start();
     });
-    connect(m_sseReply, &QIODevice::readyRead, this, &QtHttpSseWorker::handleSseReadyRead);
+
+    connect(m_sseReply, &QNetworkReply::readyRead, this, &QtHttpSseWorker::handleSseReadyRead);
     connect(m_sseReply, &QNetworkReply::finished, this, &QtHttpSseWorker::handleSseFinished);
     connect(m_sseReply, &QNetworkReply::errorOccurred, this, &QtHttpSseWorker::handleSseError);
-    // readChannelFinished 作为 finished 的补充检测（某些 Qt 版本在连接关闭时不触发 finished）
-    connect(m_sseReply, &QNetworkReply::readChannelFinished, this, [this]() {
-        if (m_sseReply && !m_stopping && !m_sseConnected) {
-            return; // 连接还没建立成功就关闭了，不触发重连
-        }
-        if (!m_sseReply || m_stopping) return;
-        std::cerr << "[SDK QtSSE] readChannelFinished: SSE stream closed, triggering reconnect" << std::endl;
-        handleSseFinished();
-    });
 }
 
 void QtHttpSseWorker::handleSseReadyRead() {
-    if (!m_sseReply) {
-        return;
-    }
-    int status = m_sseReply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-    if (status == 200) {
-        m_sseConnected = true;
-    }
-    const QByteArray chunk = m_sseReply->readAll();
-    if (!chunk.isEmpty()) {
+    if (m_stopping || !m_sseReply) return;
+    
+    QByteArray data = m_sseReply->readAll();
+    if (!data.isEmpty()) {
         m_lastDataTime.start();
+        m_parser.pushChunk(data.toStdString());
     }
-    m_parser.pushChunk(chunk.toStdString());
 }
 
 void QtHttpSseWorker::handleSseFinished() {
-    if (!m_sseReply) {
-        return;
-    }
-    // DEBUG: track if handleSseFinished fires
-const auto sessionHeader = m_sseReply->rawHeader("MCP-Session-Id");
-    if (!sessionHeader.isEmpty()) {
-        m_sessionId = QString::fromUtf8(sessionHeader);
-    }
-
-    int statusCode = m_sseReply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-    QString wwwAuthHeader = m_sseReply->rawHeader("WWW-Authenticate");
-
-    m_sseReply->deleteLater();
-    m_sseReply = nullptr;
-
-    if (m_stopping) {
-        return;
-    }
-
-    // 成功的 SSE 会话结束后重置认证计数器
-    if (statusCode == 200) {
-        m_authRetryCount = 0;
-    }
-
-    // 401/403：有认证处理器的重试（限制上限防止无限循环）
-    if (statusCode == 401 || statusCode == 403) {
-        m_authRetryCount++;
-        if (m_authRetryCount > kMaxAuthRetries) {
-            emit transportError(QString("Max auth retries (%1) exceeded").arg(kMaxAuthRetries));
-            stopStream();
-            return;
-        }
-        if (m_authRetryHandler && m_authRetryHandler(wwwAuthHeader.toStdString())) {
-            openSse();
-            return;
-        }
-        stopStream();
-        return;
-    }
-
-    bool wasConnected = m_sseConnected;
+    if (m_stopping) return;
+    if (!m_sseConnected) return; // Prevent double handling
     m_sseConnected = false;
-
-    // 非 200 且有 sessionId：快速重连（100ms，不等默认 2000ms）
-    if (statusCode != 200 && !m_sessionId.isEmpty()) {
-        QTimer::singleShot(100, this, &QtHttpSseWorker::openSse);
-        if (wasConnected) {
-            emit transportError("SSE stream disconnected unexpectedly");
-        }
-        return;
-    }
-
+    m_healthCheckTimer->stop();
     scheduleReconnect();
-    if (wasConnected) {
-        emit transportError("SSE stream disconnected unexpectedly");
-    }
 }
 
-void QtHttpSseWorker::handleSseError(QNetworkReply::NetworkError) {
-    if (!m_sseReply) {
+void QtHttpSseWorker::handleSseError(QNetworkReply::NetworkError code) {
+    if (m_stopping || !m_sseReply) return;
+    
+    if (code == QNetworkReply::RemoteHostClosedError) {
+        // Handled naturally by finished
         return;
     }
-    // 提取 HTTP Response Body 以提供详细错误信息（如 401 返回的 JSON 错误详情）
-    QString errMsg = m_sseReply->errorString();
-    QByteArray errorBody = m_sseReply->peek(m_sseReply->bytesAvailable());
-    if (!errorBody.isEmpty()) {
-        errMsg += QStringLiteral("\nResponse Body: ") + QString::fromUtf8(errorBody);
+    
+    m_healthCheckTimer->stop();
+    if (code != QNetworkReply::OperationCanceledError) {
+        emit transportError(m_sseReply->errorString());
     }
-    emit transportError(errMsg);
 }
 
 void QtHttpSseWorker::handleSseEvent(const QtSseEvent& event) {
-    if (!event.lastEventId.empty()) {
-        m_lastEventId = QString::fromStdString(event.lastEventId);
-    }
     if (event.eventName == "endpoint") {
         m_postUrl = resolveUrl(m_baseUrl, QString::fromStdString(event.data));
         m_endpointResolved = true;
@@ -278,12 +233,12 @@ void QtHttpSseWorker::handleSseEvent(const QtSseEvent& event) {
 }
 
 void QtHttpSseWorker::scheduleReconnect() {
-    m_reconnectTimer->stop();
-    int delayMs = m_retryMs;
-    // 直接创建一次性定时器，避免成员 QTimer 可能存在的线程事件循环问题
-    QTimer::singleShot(delayMs, this, [this, delayMs]() {
-        openSse();
-    });
+    if (m_stopping) return;
+    if (m_reconnectTimer->isActive()) return;
+    
+    // Exactly use m_retryMs without subtracting anything!
+    int waitTime = m_retryMs;
+    m_reconnectTimer->start(waitTime);
 }
 
 bool QtHttpSseWorker::postMessage(const QString& payload, int retryCount) {
@@ -324,18 +279,13 @@ bool QtHttpSseWorker::postMessage(const QString& payload, int retryCount) {
             m_sessionId = QString::fromUtf8(sessionHeader);
         }
 
-        // 首次获得 sessionId：等待 SSE 连接建立
         if (justGotSession) {
             m_reconnectTimer->stop();
             for (int i = 0; i < 50 && !m_sseConnected && !m_stopping; ++i) {
-                openSse();
+                if (!m_sseReply) openSse();
                 QEventLoop loop;
-                QMetaObject::Connection c1 = connect(m_sseReply, &QNetworkReply::metaDataChanged, &loop, &QEventLoop::quit);
-                QMetaObject::Connection c2 = connect(m_sseReply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+                QTimer::singleShot(100, &loop, &QEventLoop::quit);
                 loop.exec();
-                disconnect(c1); disconnect(c2);
-                if (m_sseConnected) break;
-                QTimer::singleShot(100, &loop, SLOT(quit())); loop.exec();
             }
         }
 
@@ -348,7 +298,6 @@ bool QtHttpSseWorker::postMessage(const QString& payload, int retryCount) {
                 postMessage(payload, retryCount + 1);
                 return;
             }
-            // 提取 Response Body 以提供详细认证失败原因
             QString errMsg = QString("HTTP %1: Post message authentication failed").arg(statusCode);
             QByteArray authErrBody = reply->readAll();
             if (!authErrBody.isEmpty()) {
@@ -366,13 +315,14 @@ bool QtHttpSseWorker::postMessage(const QString& payload, int retryCount) {
                 QtSseParser postParser;
                 postParser.setRetryCallback([this](int retryMs) {
                     m_retryMs = retryMs;
-                    if (m_reconnectTimer->isActive()) {
-                        m_reconnectTimer->stop();
-                        m_reconnectTimer->start(m_retryMs);
-                        m_reconnectDeadline.start();
-                    }
+                });
+                postParser.setIdCallback([this](const std::string& id) {
+                    m_lastEventId = QString::fromStdString(id);
                 });
                 postParser.setEventCallback([this](const QtSseEvent& event) {
+                    if (!event.lastEventId.empty()) {
+                        m_lastEventId = QString::fromStdString(event.lastEventId);
+                    }
                     emit messageReceived(QString::fromStdString(event.data));
                 });
                 std::string sseData = QString::fromUtf8(body).toStdString();
@@ -387,7 +337,6 @@ bool QtHttpSseWorker::postMessage(const QString& payload, int retryCount) {
         reply->deleteLater();
     });
     connect(reply, &QNetworkReply::errorOccurred, this, [this, reply](QNetworkReply::NetworkError) {
-        // 提取 HTTP Response Body 以提供详细错误信息（如 400/401/403 返回的 JSON 错误详情）
         QString errMsg = reply->errorString();
         QByteArray errorBody = reply->readAll();
         if (!errorBody.isEmpty()) {

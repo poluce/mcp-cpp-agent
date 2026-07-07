@@ -8,13 +8,28 @@
 
 ## 官方合规
 
-| 套件 | Qt 版 (QNAM 原生) | 状态 |
-|------|:---:|:---:|
-| `--suite core` (18 场景) | **100% 通过** | ✅ |
-| `--suite all` (26 场景) | **100% 通过** | ✅ |
-| 新协议 (22 场景) | **100% 通过** | ✅ |
+**测试日期**：2026-07-06 | **协议版本**：2025-11-25
 
-> 本 SDK 在 HTTP/SSE 传输层中优雅地解决并修复了官方协议规范在建立连接时由于 `endpoint` 尚未就绪而发包导致的 Race Condition（竞态条件）Bug，支持 26 个合规测试场景全部百分之百通过。
+| 套件 | 场景数 | 通过 | 警告 | 失败 | 通过率 |
+|------|:------:|:----:|:----:|:----:|:------:|
+| `--suite all` | 26 | 21 | 1 | 4 | **81%** |
+
+**总计**：320 assertions passed, 9 failed, 2 warnings
+
+### 已通过场景 (21/26)
+
+`initialize` · `tools_call` · `elicitation-sep1034-client-defaults` · `auth/metadata-default` · `auth/metadata-var1` · `auth/metadata-var2` · `auth/metadata-var3` · `auth/scope-from-www-authenticate` · `auth/scope-from-scopes-supported` · `auth/scope-omitted-when-undefined` · `auth/scope-step-up` · `auth/scope-retry-limit` · `auth/token-endpoint-auth-basic` · `auth/token-endpoint-auth-post` · `auth/token-endpoint-auth-none` · `auth/pre-registration` · `auth/2025-03-26-oauth-metadata-backcompat` · `auth/resource-mismatch` · `auth/offline-access-scope` · `auth/offline-access-not-supported` · `auth/client-credentials-basic`
+
+### 失败场景 (4/26)
+
+| 场景 | 问题 | 状态 |
+|------|------|------|
+| `sse-retry` | 重连时间精度（事件循环调度延迟） | ⚠️ |
+| `auth/2025-03-26-oauth-endpoint-fallback` | OAuth 端点发现 404 | ❌ |
+| `auth/client-credentials-jwt` | JWT-Bearer 不支持 | ❌ |
+| `auth/cross-app-access-complete-flow` | Token 交换失败（需 JWT） | ❌ |
+
+> 本 SDK 在 HTTP/SSE 传输层中优雅地解决并修复了官方协议规范在建立连接时由于 `endpoint` 尚未就绪而发包导致的 Race Condition（竞态条件）Bug。
 
 ---
 
@@ -172,4 +187,6 @@ QObject::connect(client.get(), &McpQtClient::recoveryFailed, [](const QString& m
 
 ## 已知限制
 
-*   **JWT-Bearer Grant Type**：暂不支持 `urn:ietf:params:oauth:grant-type:jwt-bearer`（需要 `client_assertion` + ES256/RS256 签名）。相关 conformance 场景（`auth/client-credentials-jwt`）暂不通过。
+*   **JWT-Bearer Grant Type**：暂不支持 `urn:ietf:params:oauth:grant-type:jwt-bearer`（需要 `client_assertion` + ES256/RS256 签名）。相关场景 `auth/client-credentials-jwt`、`auth/cross-app-access-complete-flow` 暂不通过。
+*   **OAuth 端点回退**：`2025-03-26-oauth-endpoint-fallback` 场景的 OAuth 发现端点兼容性问题待修复。
+*   **SSE 重连精度**：`sse-retry` 场景的重连时间精度受事件循环调度影响，存在约 ±64ms 偏差（警告，不影响功能）。

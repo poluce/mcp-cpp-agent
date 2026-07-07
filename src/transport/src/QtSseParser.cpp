@@ -6,6 +6,7 @@ namespace mcp_qt {
 
 void QtSseParser::setEventCallback(EventCallback callback) { m_eventCallback = std::move(callback); }
 void QtSseParser::setRetryCallback(RetryCallback callback) { m_retryCallback = std::move(callback); }
+void QtSseParser::setIdCallback(IdCallback callback) { m_idCallback = std::move(callback); }
 void QtSseParser::reset() { m_buffer.clear(); }
 
 void QtSseParser::pushChunk(const std::string& chunk) {
@@ -58,6 +59,7 @@ void QtSseParser::flushEventBlock(const std::string& block) {
             if (!event.lastEventId.empty() && event.lastEventId.front() == ' ') {
                 event.lastEventId.erase(0, 1);
             }
+            if (m_idCallback) m_idCallback(event.lastEventId);
         } else if (line.rfind("retry:", 0) == 0 && m_retryCallback) {
             std::string value = line.substr(6);
             if (!value.empty() && value.front() == ' ') {

@@ -156,10 +156,10 @@ static std::string _eRm(const std::string& w){
     return "";
 }
 static std::string _bUrl(const std::string& u){size_t p=u.find("://");if(p==std::string::npos)return u;size_t q=u.find('/',p+3);return q!=std::string::npos?u.substr(0,q):u;}
-static bool _dmQt(const QString& is,mcp::OAuthServerMetadata* o){
+static bool _dmQt(const QString& is,mcp::OAuthServerMetadata* o, bool* cidMetaSupp = nullptr){
     QString b=is;if(!b.endsWith('/'))b+='/';QStringList u;u<<b+".well-known/oauth-authorization-server"<<b+".well-known/openid-configuration";
-    int se=is.indexOf("://");if(se>=0){int ps=is.indexOf('/',se+3);if(ps>=0){QString o=is.left(ps),pp=is.mid(ps);if(!pp.isEmpty()&&pp!="/"){if(!pp.endsWith('/'))pp+='/';u<<o+"/.well-known/oauth-authorization-server"+pp<<o+"/.well-known/openid-configuration"+pp;}}}
-    for(const auto& x:u){QByteArray d=_get(x);if(!d.isEmpty()){auto j=nlohmann::json::parse(d.toStdString(),nullptr,false);if(!j.is_discarded()&&j.contains("token_endpoint")){try{*o=mcp::OAuthServerMetadata::fromJson(j);return true;}catch(...){}}}}return false;
+    int se=is.indexOf("://");if(se>=0){int ps=is.indexOf('/',se+3);if(ps>=0){QString oBase=is.left(ps),pp=is.mid(ps);if(!pp.isEmpty()&&pp!="/"){if(pp.endsWith('/'))pp.chop(1);u<<oBase+"/.well-known/oauth-authorization-server"+pp<<oBase+"/.well-known/openid-configuration"+pp;}u<<oBase+"/.well-known/oauth-authorization-server"<<oBase+"/.well-known/openid-configuration";}}
+    for(const auto& x:u){QByteArray d=_get(x);if(!d.isEmpty()){auto j=nlohmann::json::parse(d.toStdString(),nullptr,false);if(!j.is_discarded()&&j.contains("token_endpoint")){try{*o=mcp::OAuthServerMetadata::fromJson(j);if(cidMetaSupp && j.contains("client_id_metadata_document_supported") && j["client_id_metadata_document_supported"].is_boolean()) *cidMetaSupp = j["client_id_metadata_document_supported"].get<bool>(); return true;}catch(...){}}}}return false;
 }
 
 // 完整 OAuth 认证（全 QNAM，无 libcurl）
@@ -179,17 +179,18 @@ static bool _runOAuthQt(const std::string& sseUrl, const nlohmann::json& ctx,
 
     // 2) Metadata 发现
     mcp::OAuthServerMetadata mm;
+    bool cidMetaSupp = false;
     if(!pj.is_discarded()&&pj.contains("authorization_servers")){
         // 从 PRM 获取 authorization_servers
         std::cerr << "[OAuth] PRM discovered, authorization_servers: " << pj["authorization_servers"][0].get<std::string>() << std::endl;
         QString iu=QString::fromStdString(pj["authorization_servers"][0].get<std::string>());
         if(pj.contains("oauthMetadataLocation")&&pj["oauthMetadataLocation"].is_string())iu=QString::fromStdString(_bUrl(sseUrl))+QString::fromStdString(pj["oauthMetadataLocation"].get<std::string>());
-        if(!_dmQt(iu,&mm)){std::cerr << "[OAuth] Metadata discovery failed" << std::endl;return false;}
+        if(!_dmQt(iu,&mm,&cidMetaSupp)){std::cerr << "[OAuth] Metadata discovery failed" << std::endl;return false;}
     }else{
         // 直接尝试 OAuth Authorization Server Metadata（2025-03-26 兼容）
         std::cerr << "[OAuth] Trying direct OAuth metadata discovery" << std::endl;
-        QString b=QString::fromStdString(_bUrl(sseUrl));
-        if(!_dmQt(b,&mm)){std::cerr << "[OAuth] Direct metadata discovery failed" << std::endl;return false;}
+        QString b=QString::fromStdString(sseUrl);
+        if(!_dmQt(b,&mm,&cidMetaSupp)){std::cerr << "[OAuth] Direct metadata discovery failed" << std::endl;return false;}
     }
     std::cerr << "[OAuth] Metadata discovered, registration_endpoint: " << mm.registrationEndpoint << std::endl;
 
@@ -204,7 +205,9 @@ static bool _runOAuthQt(const std::string& sseUrl, const nlohmann::json& ctx,
     }
     std::cerr << "[OAuth] Client credentials from context: cid='" << cid << "', pr=" << pr << std::endl;
     std::cerr << "[OAuth] Registration endpoint: " << mm.registrationEndpoint << std::endl;
-    if(cid.empty()&&!mm.registrationEndpoint.empty()){
+    if(pr){
+        std::cerr << "[OAuth] Skipping registration: cid.empty()=" << cid.empty() << ", registrationEndpoint.empty()=" << mm.registrationEndpoint.empty() << std::endl;
+    }else if(!mm.registrationEndpoint.empty()){
         std::cerr << "[OAuth] Registering client at " << mm.registrationEndpoint << std::endl;
         nlohmann::json rr={{"client_name","mcp-qt-client"},{"grant_types",{"authorization_code","refresh_token"}},{"redirect_uris",{redirectUri.toStdString()}},{"response_types",{"code"}},{"token_endpoint_auth_method","none"}};
         QByteArray rb=_post(QString::fromStdString(mm.registrationEndpoint),QByteArray::fromStdString(rr.dump()),"application/json");
@@ -212,8 +215,9 @@ static bool _runOAuthQt(const std::string& sseUrl, const nlohmann::json& ctx,
         auto rj=nlohmann::json::parse(rb.toStdString(),nullptr,false);if(rj.is_discarded()||!rj.contains("client_id")){std::cerr << "[OAuth] Registration failed" << std::endl;return false;}
         cid=rj["client_id"].get<std::string>();csc=rj.value("client_secret","");
         std::cerr << "[OAuth] Registered client_id: " << cid << std::endl;
-    } else {
-        std::cerr << "[OAuth] Skipping registration: cid.empty()=" << cid.empty() << ", registrationEndpoint.empty()=" << mm.registrationEndpoint.empty() << std::endl;
+    }else{
+        std::cerr << "[OAuth] No registration endpoint, using default client_id" << std::endl;
+        cid = cidMetaSupp ? redirectUri.toStdString() : "mcp-qt-client";
     }
 
     // 4) JWT-Bearer
@@ -412,6 +416,8 @@ McpQtClient::Ptr McpQtClient::connectHttpAndWait(const QString& url,const QStrin
     c->m_timeoutMs = to;
     // 使用无状态 HTTP 传输（兼容 SSE 和无状态服务器）
     auto t=std::make_shared<mcp_qt::QtStatelessHttpTransport>(url);
+    const char* pVer = std::getenv("MCP_CONFORMANCE_PROTOCOL_VERSION");
+    if (pVer) t->setProtocolVersion(pVer);
     if(!c->connectToTransportAndWait(t,name,ver,to,err))return nullptr;return c;
 }
 McpQtClient::Ptr McpQtClient::connectStdioAndWait(const QString& cmd,const QStringList& args,const QString& name,const QString& ver,int to, QString* err){
@@ -1685,8 +1691,8 @@ void McpQtClient::setElicitationHandler(QObject* ctx, ElicitationHandler h){
     m_savedElicitationContext = QPointer<QObject>(ctx);
     m_hasSavedElicitationContext = (ctx != nullptr);
     if(!m_session) return;
-    
-    registerCapability("experimental", QJsonObject{{"elicitation", QJsonObject()}});
+
+    registerCapability("elicitation", QJsonObject{{"form", QJsonObject{{"applyDefaults", true}}}});
     
     bool hasCtx = m_hasSavedElicitationContext;
     QPointer<QObject> pCtx = m_savedElicitationContext;
