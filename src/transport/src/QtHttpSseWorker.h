@@ -45,6 +45,8 @@ private:
     void scheduleReconnect();
     QString currentBearerToken() const;
     void flushPendingMessages();
+    void parseSseInlineBody(const QByteArray& body);
+    void setupRequestHeaders(QNetworkRequest& request) const;
 
     QString m_baseUrl;
     QString m_postUrl;
@@ -55,7 +57,7 @@ private:
     int m_authRetryCount{0};
     static constexpr int kMaxAuthRetries = 3;
     QElapsedTimer m_lastDataTime;
-    QElapsedTimer m_lastHackTime;
+    QElapsedTimer m_lastHealthCheckTime;
     bool m_stopping{false};
     bool m_sseConnected{false};
     std::function<std::string()> m_tokenProvider;

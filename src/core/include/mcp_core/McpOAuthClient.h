@@ -1,6 +1,4 @@
 #pragma once
-
-
 #include <string>
 #include <functional>
 #include <mutex>
@@ -10,6 +8,12 @@
 namespace mcp {
 
 using json = nlohmann::json;
+
+// 辅助函数：将 JSON 数组字段解析为 vector<string>
+inline void parseJsonStringArray(const json& j, const char* key, std::vector<std::string>& out) {
+    if (j.contains(key) && j[key].is_array())
+        for (const auto& s : j[key]) out.push_back(s.get<std::string>());
+}
 
 /**
  * @brief OAuth 2.0 token response.
@@ -57,16 +61,11 @@ struct OAuthServerMetadata {
         m.authorizationEndpoint = j.value("authorization_endpoint", "");
         m.tokenEndpoint = j.value("token_endpoint", "");
         m.registrationEndpoint = j.value("registration_endpoint", "");
-        if (j.contains("scopes_supported") && j["scopes_supported"].is_array())
-            for (auto& s : j["scopes_supported"]) m.scopesSupported.push_back(s.get<std::string>());
-        if (j.contains("response_types_supported") && j["response_types_supported"].is_array())
-            for (auto& s : j["response_types_supported"]) m.responseTypesSupported.push_back(s.get<std::string>());
-        if (j.contains("grant_types_supported") && j["grant_types_supported"].is_array())
-            for (auto& s : j["grant_types_supported"]) m.grantTypesSupported.push_back(s.get<std::string>());
-        if (j.contains("code_challenge_methods_supported") && j["code_challenge_methods_supported"].is_array())
-            for (auto& s : j["code_challenge_methods_supported"]) m.codeChallengeMethodsSupported.push_back(s.get<std::string>());
-        if (j.contains("token_endpoint_auth_methods_supported") && j["token_endpoint_auth_methods_supported"].is_array())
-            for (auto& s : j["token_endpoint_auth_methods_supported"]) m.tokenEndpointAuthMethodsSupported.push_back(s.get<std::string>());
+        parseJsonStringArray(j, "scopes_supported", m.scopesSupported);
+        parseJsonStringArray(j, "response_types_supported", m.responseTypesSupported);
+        parseJsonStringArray(j, "grant_types_supported", m.grantTypesSupported);
+        parseJsonStringArray(j, "code_challenge_methods_supported", m.codeChallengeMethodsSupported);
+        parseJsonStringArray(j, "token_endpoint_auth_methods_supported", m.tokenEndpointAuthMethodsSupported);
         return m;
     }
 };
@@ -89,8 +88,7 @@ struct OAuthClientRegistration {
         r.clientName = j.value("client_name", "");
         r.clientIdIssuedAt = j.value("client_id_issued_at", 0);
         r.clientSecretExpiresAt = j.value("client_secret_expires_at", 0);
-        if (j.contains("redirect_uris") && j["redirect_uris"].is_array())
-            for (auto& u : j["redirect_uris"]) r.redirectUris.push_back(u.get<std::string>());
+        parseJsonStringArray(j, "redirect_uris", r.redirectUris);
         return r;
     }
 };

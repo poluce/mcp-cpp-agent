@@ -22,11 +22,9 @@ struct McpReconnectPolicy {
         double delay = initialDelayMs;
         for (int i = 1; i < attempt; ++i) {
             delay *= multiplier;
-            if (delay >= maxDelayMs) {
-                return maxDelayMs;
-            }
+            if (delay >= maxDelayMs) return maxDelayMs;
         }
-        return (delay > maxDelayMs) ? maxDelayMs : static_cast<int>(delay);
+        return static_cast<int>(delay);
     }
 };
 

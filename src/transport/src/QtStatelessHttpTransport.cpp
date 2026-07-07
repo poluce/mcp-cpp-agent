@@ -2,8 +2,6 @@
 #include <nlohmann/json.hpp>
 #include <QNetworkRequest>
 #include <QNetworkProxy>
-#include <QJsonDocument>
-#include <QJsonObject>
 
 namespace mcp_qt {
 
@@ -41,8 +39,7 @@ void QtStatelessHttpTransport::close() {
 }
 
 QString QtStatelessHttpTransport::currentBearerToken() const {
-    if (!m_tokenProvider) return {};
-    return QString::fromStdString(m_tokenProvider());
+    return m_tokenProvider ? QString::fromStdString(m_tokenProvider()) : QString{};
 }
 
 void QtStatelessHttpTransport::applyCommonHeaders(QNetworkRequest& request, bool isGet) {
@@ -72,15 +69,12 @@ void QtStatelessHttpTransport::applyCommonHeaders(QNetworkRequest& request, bool
 bool QtStatelessHttpTransport::send(const std::string& message) {
     if (!m_isRunning || !m_nam) return false;
 
-    // 检测是否是 initialized 通知
+    // 检测是否是 initialized 通知（nlohmann::parse 带 nfp 参数时不会抛异常）
     bool isInitializedNotification = false;
-    try {
-        auto json = nlohmann::json::parse(message, nullptr, false);
-        if (!json.is_discarded() && json.contains("method")) {
-            std::string method = json["method"].get<std::string>();
-            isInitializedNotification = (method == "notifications/initialized");
-        }
-    } catch (...) {}
+    auto json = nlohmann::json::parse(message, nullptr, false);
+    if (!json.is_discarded() && json.contains("method") && json["method"].is_string()) {
+        isInitializedNotification = (json["method"].get<std::string>() == "notifications/initialized");
+    }
 
     // 缓存请求数据用于重试（非重试状态下）
     if (!m_isRetrying) {
@@ -218,18 +212,13 @@ void QtStatelessHttpTransport::startSseListener() {
 }
 
 void QtStatelessHttpTransport::handleSseResponse(QNetworkReply* reply) {
-    QByteArray chunk = reply->readAll();
-    m_sseBuffer.append(chunk);
+    m_sseBuffer.append(reply->readAll());
 
-    // 解析 SSE 事件
-    while (true) {
-        int pos = m_sseBuffer.indexOf("\n\n");
-        if (pos == -1) break;
-
-        QByteArray event = m_sseBuffer.left(pos);
+    // 解析 SSE 事件（以双换行分隔）
+    int pos = 0;
+    while ((pos = m_sseBuffer.indexOf("\n\n")) != -1) {
+        processSseData(m_sseBuffer.left(pos));
         m_sseBuffer = m_sseBuffer.mid(pos + 2);
-
-        processSseData(event);
     }
 }
 

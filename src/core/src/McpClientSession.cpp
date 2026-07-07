@@ -1,9 +1,28 @@
 #include "mcp_core/McpClientSession.h"
-#include <iostream>
-#include <fstream>
-#include <memory>
 
 namespace mcp {
+
+namespace {
+    json notInitializedError() {
+        return {{"code", -32002}, {"message", "Session not initialized"}};
+    }
+
+    McpTrafficKind detectTrafficKind(const json& j) {
+        if (j.contains("id")) {
+            if (j.contains("result") || j.contains("error")) return McpTrafficKind::Response;
+            if (j.contains("method")) return McpTrafficKind::Request;
+        } else if (j.contains("method")) {
+            return McpTrafficKind::Notification;
+        }
+        return McpTrafficKind::Unknown;
+    }
+}
+
+void McpClientSession::emitTrafficEvent(McpTrafficDirection dir, McpTrafficKind kind,
+                                         const json& payload, const std::string& raw) {
+    if (!m_trafficCallback) return;
+    m_trafficCallback({dir, kind, payload, raw});
+}
 
 McpClientSession::McpClientSession(std::shared_ptr<IMcpTransport> transport)
     : m_transport(std::move(transport)) {}
@@ -113,14 +132,7 @@ int64_t McpClientSession::sendRequest(const std::string& method, const json& par
 
     log(LogLevel::Debug, "sendRequest: method=" + method + ", id=" + std::to_string(id));
     std::string dumpStr = requestMsg.dump();
-    if (m_trafficCallback) {
-        McpTrafficEvent event;
-        event.direction = McpTrafficDirection::Outbound;
-        event.kind = McpTrafficKind::Request;
-        event.payload = requestMsg;
-        event.raw = dumpStr;
-        m_trafficCallback(event);
-    }
+    emitTrafficEvent(McpTrafficDirection::Outbound, McpTrafficKind::Request, requestMsg, dumpStr);
     m_transport->send(dumpStr);
     return id;
 }
@@ -132,14 +144,7 @@ void McpClientSession::sendNotification(const std::string& method, const json& p
         {"params", params}
     };
     std::string dumpStr = notificationMsg.dump();
-    if (m_trafficCallback) {
-        McpTrafficEvent event;
-        event.direction = McpTrafficDirection::Outbound;
-        event.kind = McpTrafficKind::Notification;
-        event.payload = notificationMsg;
-        event.raw = dumpStr;
-        m_trafficCallback(event);
-    }
+    emitTrafficEvent(McpTrafficDirection::Outbound, McpTrafficKind::Notification, notificationMsg, dumpStr);
     m_transport->send(dumpStr);
 }
 
@@ -168,25 +173,7 @@ void McpClientSession::handleIncomingMessage(const std::string& rawMessage) {
         return;
     }
 
-    if (m_trafficCallback) {
-        McpTrafficKind kind = McpTrafficKind::Unknown;
-        if (j.contains("id")) {
-            if (j.contains("result") || j.contains("error")) {
-                kind = McpTrafficKind::Response;
-            } else if (j.contains("method")) {
-                kind = McpTrafficKind::Request;
-            }
-        } else if (j.contains("method")) {
-            kind = McpTrafficKind::Notification;
-        }
-
-        McpTrafficEvent event;
-        event.direction = McpTrafficDirection::Inbound;
-        event.kind = kind;
-        event.payload = j;
-        event.raw = rawMessage;
-        m_trafficCallback(event);
-    }
+    emitTrafficEvent(McpTrafficDirection::Inbound, detectTrafficKind(j), j, rawMessage);
 
     if (j.contains("id")) {
         if (j.contains("result") || j.contains("error")) {
@@ -444,44 +431,14 @@ void McpClientSession::shutdown(std::function<void(bool success)> callback) {
 }
 
 void McpClientSession::listTools(std::function<void(const std::vector<McpTool>& tools, const json& error)> callback) {
-    if (m_state != SessionState::Initialized) {
-        json err = {
-            {"code", -32002},
-            {"message", "Session not initialized"}
-        };
-        callback({}, err);
-        return;
-    }
-    sendRequest("tools/list", json::object(), [callback](const json& result, const json& error) {
-        if (!error.empty()) {
-            callback({}, error);
-        } else {
-            std::vector<McpTool> toolsList;
-            bool parseOk = true;
-            if (result.contains("tools") && result["tools"].is_array()) {
-                for (const auto& item : result["tools"]) {
-                    try {
-                        toolsList.push_back(item.get<McpTool>());
-                    } catch (...) {
-                        parseOk = false;
-                    }
-                }
-            }
-            if (!parseOk) {
-                toolsList.clear();
-            }
-            callback(toolsList, json::object());
-        }
+    listTools("", [callback](const std::vector<McpTool>& tools, const std::string&, const json& error) {
+        callback(tools, error);
     });
 }
 
 void McpClientSession::listTools(const std::string& cursor, std::function<void(const std::vector<McpTool>& tools, const std::string& nextCursor, const json& error)> callback) {
     if (m_state != SessionState::Initialized) {
-        json err = {
-            {"code", -32002},
-            {"message", "Session not initialized"}
-        };
-        callback({}, "", err);
+        callback({}, "", notInitializedError());
         return;
     }
     json params = json::object();
@@ -519,11 +476,7 @@ void McpClientSession::callTool(const std::string& name, const json& arguments,
                                 std::function<void(const json& content, const json& error)> callback,
                                 ProgressCallback progressCallback) {
     if (m_state != SessionState::Initialized) {
-        json err = {
-            {"code", -32002},
-            {"message", "Session not initialized"}
-        };
-        callback(json::object(), err);
+        callback(json::object(), notInitializedError());
         return;
     }
     json params = {
@@ -548,11 +501,7 @@ void McpClientSession::listResources(std::function<void(const json& result, cons
 
 void McpClientSession::listResources(const std::string& cursor, std::function<void(const json& result, const std::string& nextCursor, const json& error)> callback) {
     if (m_state != SessionState::Initialized) {
-        json err = {
-            {"code", -32002},
-            {"message", "Session not initialized"}
-        };
-        callback(json::object(), "", err);
+        callback(json::object(), "", notInitializedError());
         return;
     }
     json params = json::object();
@@ -574,11 +523,7 @@ void McpClientSession::listResources(const std::string& cursor, std::function<vo
 
 void McpClientSession::readResource(const std::string& uri, std::function<void(const json& result, const json& error)> callback) {
     if (m_state != SessionState::Initialized) {
-        json err = {
-            {"code", -32002},
-            {"message", "Session not initialized"}
-        };
-        callback(json::object(), err);
+        callback(json::object(), notInitializedError());
         return;
     }
     json params = {
@@ -591,11 +536,7 @@ void McpClientSession::readResource(const std::string& uri, std::function<void(c
 
 void McpClientSession::subscribeResource(const std::string& uri, std::function<void(bool success, const json& error)> callback) {
     if (m_state != SessionState::Initialized) {
-        json err = {
-            {"code", -32002},
-            {"message", "Session not initialized"}
-        };
-        callback(false, err);
+        callback(false, notInitializedError());
         return;
     }
     json params = {
@@ -612,11 +553,7 @@ void McpClientSession::subscribeResource(const std::string& uri, std::function<v
 
 void McpClientSession::unsubscribeResource(const std::string& uri, std::function<void(bool success, const json& error)> callback) {
     if (m_state != SessionState::Initialized) {
-        json err = {
-            {"code", -32002},
-            {"message", "Session not initialized"}
-        };
-        callback(false, err);
+        callback(false, notInitializedError());
         return;
     }
     json params = {
@@ -639,11 +576,7 @@ void McpClientSession::listPrompts(std::function<void(const json& result, const 
 
 void McpClientSession::listPrompts(const std::string& cursor, std::function<void(const json& result, const std::string& nextCursor, const json& error)> callback) {
     if (m_state != SessionState::Initialized) {
-        json err = {
-            {"code", -32002},
-            {"message", "Session not initialized"}
-        };
-        callback(json::object(), "", err);
+        callback(json::object(), "", notInitializedError());
         return;
     }
     json params = json::object();
@@ -665,11 +598,7 @@ void McpClientSession::listPrompts(const std::string& cursor, std::function<void
 
 void McpClientSession::getPrompt(const std::string& name, const json& arguments, std::function<void(const json& result, const json& error)> callback) {
     if (m_state != SessionState::Initialized) {
-        json err = {
-            {"code", -32002},
-            {"message", "Session not initialized"}
-        };
-        callback(json::object(), err);
+        callback(json::object(), notInitializedError());
         return;
     }
     json params = {
@@ -1010,11 +939,7 @@ std::string McpClientSession::callToolSyncRaw(const std::string& name, const std
 
 void McpClientSession::ping(std::function<void(bool success, const json& error)> callback) {
     if (m_state != SessionState::Initialized) {
-        json err = {
-            {"code", -32002},
-            {"message", "Session not initialized"}
-        };
-        callback(false, err);
+        callback(false, notInitializedError());
         return;
     }
     sendRequest("ping", json::object(), [callback](const json& result, const json& error) {
@@ -1053,11 +978,7 @@ void McpClientSession::listResourceTemplates(std::function<void(const std::vecto
 
 void McpClientSession::listResourceTemplates(const std::string& cursor, std::function<void(const std::vector<McpResourceTemplate>& templates, const std::string& nextCursor, const json& error)> callback) {
     if (m_state != SessionState::Initialized) {
-        json err = {
-            {"code", -32002},
-            {"message", "Session not initialized"}
-        };
-        callback({}, "", err);
+        callback({}, "", notInitializedError());
         return;
     }
     json params = json::object();
@@ -1134,11 +1055,7 @@ std::vector<McpResourceTemplate> McpClientSession::listResourceTemplatesSync(con
 
 void McpClientSession::complete(const json& ref, const json& argument, std::function<void(const json& completion, const json& error)> callback) {
     if (m_state != SessionState::Initialized) {
-        json err = {
-            {"code", -32002},
-            {"message", "Session not initialized"}
-        };
-        callback(json::object(), err);
+        callback(json::object(), notInitializedError());
         return;
     }
     json params = {

@@ -14,20 +14,21 @@ void QtSseParser::pushChunk(const std::string& chunk) {
     while (true) {
         std::size_t posCrlf = m_buffer.find("\r\n\r\n");
         std::size_t posLf = m_buffer.find("\n\n");
+        
+        std::size_t pos = std::min(posCrlf, posLf);
+        if (pos == std::string::npos) break;
 
-        if (posCrlf == std::string::npos && posLf == std::string::npos) {
-            break;
-        }
+        std::size_t len = (pos == posCrlf) ? 4 : 2;
+        const std::string block = m_buffer.substr(0, pos);
+        m_buffer.erase(0, pos + len);
+        flushEventBlock(block);
+    }
+}
 
-        if (posCrlf != std::string::npos && (posLf == std::string::npos || posCrlf < posLf)) {
-            const std::string block = m_buffer.substr(0, posCrlf);
-            m_buffer.erase(0, posCrlf + 4);
-            flushEventBlock(block);
-        } else {
-            const std::string block = m_buffer.substr(0, posLf);
-            m_buffer.erase(0, posLf + 2);
-            flushEventBlock(block);
-        }
+// 去除字符串前导空格（SSE 规范允许字段值前有一个可选空格）
+static void trimLeadingSpace(std::string& s) {
+    if (!s.empty() && s.front() == ' ') {
+        s.erase(0, 1);
     }
 }
 
@@ -42,29 +43,21 @@ void QtSseParser::flushEventBlock(const std::string& block) {
         }
         if (line.rfind("event:", 0) == 0) {
             event.eventName = line.substr(6);
-            if (!event.eventName.empty() && event.eventName.front() == ' ') {
-                event.eventName.erase(0, 1);
-            }
+            trimLeadingSpace(event.eventName);
         } else if (line.rfind("data:", 0) == 0) {
             std::string part = line.substr(5);
-            if (!part.empty() && part.front() == ' ') {
-                part.erase(0, 1);
-            }
+            trimLeadingSpace(part);
             if (!event.data.empty()) {
                 event.data += "\n";
             }
             event.data += part;
         } else if (line.rfind("id:", 0) == 0) {
             event.lastEventId = line.substr(3);
-            if (!event.lastEventId.empty() && event.lastEventId.front() == ' ') {
-                event.lastEventId.erase(0, 1);
-            }
+            trimLeadingSpace(event.lastEventId);
             if (m_idCallback) m_idCallback(event.lastEventId);
         } else if (line.rfind("retry:", 0) == 0 && m_retryCallback) {
             std::string value = line.substr(6);
-            if (!value.empty() && value.front() == ' ') {
-                value.erase(0, 1);
-            }
+            trimLeadingSpace(value);
             try {
                 m_retryCallback(std::stoi(value));
             } catch (...) {

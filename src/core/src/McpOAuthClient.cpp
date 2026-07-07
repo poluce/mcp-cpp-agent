@@ -2,10 +2,7 @@
 #include <random>
 #include <sstream>
 #include <iomanip>
-#include <thread>
-#include <future>
 #include <mutex>
-#include <iostream>
 
 #ifdef _WIN32
 #include <windows.h>

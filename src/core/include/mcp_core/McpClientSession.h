@@ -394,6 +394,7 @@ private:
     void handleRequestFromServer(const json& requestJson);
 
     void log(LogLevel level, const std::string& message);
+    void emitTrafficEvent(McpTrafficDirection dir, McpTrafficKind kind, const json& payload, const std::string& raw);
 
     std::shared_ptr<IMcpTransport> m_transport;
     mutable std::mutex m_mutex;

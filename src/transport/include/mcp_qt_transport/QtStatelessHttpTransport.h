@@ -17,15 +17,8 @@ using TokenProvider = std::function<std::string()>;
 // Auth retry handler 回调（参数: WWW-Authenticate header 值）
 using AuthRetryHandler = std::function<bool(const std::string&)>;
 
-/**
- * @brief Streamable HTTP Transport for MCP (被动适配模式)
- *
- * 实现官方 SDK 的 StreamableHttpTransport 行为：
- * 1. POST 请求 Accept: application/json, text/event-stream
- * 2. 根据响应 Content-Type 被动适配（JSON 或 SSE）
- * 3. initialized 通知后启动 GET SSE 监听流
- * 4. 支持 401 OAuth 重试
- */
+// Streamable HTTP Transport：POST 请求后根据 Content-Type 被动适配 JSON/SSE，
+// initialized 通知后启动 GET SSE 监听流，支持 401 OAuth 重试
 class QtStatelessHttpTransport : public QObject, public mcp::IMcpTransport {
     Q_OBJECT
 public:

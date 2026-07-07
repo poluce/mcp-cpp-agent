@@ -1,9 +1,5 @@
 #include "QtHttpSseWorker.h"
 
-#include <chrono>
-#include <cstdio>
-#include <iostream>
-#include <thread>
 #include <QEventLoop>
 #include <QNetworkAccessManager>
 #include <QNetworkRequest>
@@ -12,36 +8,19 @@
 
 namespace mcp_qt {
 
-// 从相对路径解析为完整 URL
 static QString resolveUrl(const QString& base, const QString& relative) {
     if (relative.isEmpty()) return base;
-    if (relative.contains("://")) return relative;
+    if (relative.contains(QStringLiteral("://"))) return relative;
 
-    int schemeEnd = base.indexOf("://");
-    int hostStart = (schemeEnd != -1) ? schemeEnd + 3 : 0;
-
-    if (relative[0] == '/') {
-        int pathStart = base.indexOf('/', hostStart);
-        if (pathStart != -1) {
-            return base.left(pathStart) + relative;
+    QUrl baseUrl(base);
+    // 启发式：如果 URL 不以 '/' 结尾，并且最后一段不包含 '.'，则将其视为目录并追加 '/'
+    if (!base.endsWith(QLatin1Char('/'))) {
+        QString lastPart = baseUrl.path().section(QLatin1Char('/'), -1);
+        if (!lastPart.isEmpty() && !lastPart.contains(QLatin1Char('.'))) {
+            baseUrl.setPath(baseUrl.path() + QLatin1Char('/'));
         }
-        return base + relative;
     }
-
-    int pathStart = base.indexOf('/', hostStart);
-    if (pathStart == -1) {
-        return base + "/" + relative;
-    }
-
-    int lastSlash = base.lastIndexOf('/');
-    if (lastSlash != -1 && lastSlash >= hostStart) {
-        QString lastPart = base.mid(lastSlash + 1);
-        if (!lastPart.isEmpty() && !lastPart.contains('.')) {
-            return base + "/" + relative;
-        }
-        return base.left(lastSlash + 1) + relative;
-    }
-    return base + "/" + relative;
+    return baseUrl.resolved(QUrl(relative)).toString();
 }
 
 QtHttpSseWorker::QtHttpSseWorker(QString baseUrl, QObject* parent)
@@ -59,9 +38,9 @@ QtHttpSseWorker::QtHttpSseWorker(QString baseUrl, QObject* parent)
     connect(m_healthCheckTimer, &QTimer::timeout, this, [this]() {
         if (!m_sseConnected || m_stopping) return;
         if (m_lastDataTime.isValid() && m_lastDataTime.elapsed() > 100) {
-            // ONLY trigger hack if it has been at least 5000ms since the last hack
-            if (!m_lastHackTime.isValid() || m_lastHackTime.elapsed() > 5000) {
-                m_lastHackTime.start();
+            // 连接停滞检测：若超过 5 秒未恢复数据，则主动断开触发重连
+            if (!m_lastHealthCheckTime.isValid() || m_lastHealthCheckTime.elapsed() > 5000) {
+                m_lastHealthCheckTime.start();
                 if (m_sseReply) {
                     m_sseReply->abort();
                 }
@@ -118,11 +97,22 @@ void QtHttpSseWorker::stopStream() {
     emit transportClosed();
 }
 
-QString QtHttpSseWorker::currentBearerToken() const {
-    if (!m_tokenProvider) {
-        return {};
+void QtHttpSseWorker::setupRequestHeaders(QNetworkRequest& request) const {
+    for (auto it = m_requestConfig.defaultHeaders.constBegin(); it != m_requestConfig.defaultHeaders.constEnd(); ++it) {
+        request.setRawHeader(it.key(), it.value());
     }
-    return QString::fromStdString(m_tokenProvider());
+    request.setRawHeader("MCP-Protocol-Version", m_protocolVersion.toUtf8());
+    if (!m_sessionId.isEmpty()) {
+        request.setRawHeader("MCP-Session-Id", m_sessionId.toUtf8());
+    }
+    const QString token = currentBearerToken();
+    if (!token.isEmpty() && m_requestConfig.allowAuthorizationOverride) {
+        request.setRawHeader("Authorization", "Bearer " + token.toUtf8());
+    }
+}
+
+QString QtHttpSseWorker::currentBearerToken() const {
+    return m_tokenProvider ? QString::fromStdString(m_tokenProvider()) : QString{};
 }
 
 void QtHttpSseWorker::openSse() {
@@ -137,25 +127,11 @@ void QtHttpSseWorker::openSse() {
 
     QNetworkRequest request;
     request.setUrl(QUrl(m_baseUrl));
-    for (auto it = m_requestConfig.defaultHeaders.constBegin(); it != m_requestConfig.defaultHeaders.constEnd(); ++it) {
-        request.setRawHeader(it.key(), it.value());
-    }
+    setupRequestHeaders(request);
     request.setRawHeader("Accept", "text/event-stream");
     request.setRawHeader("Cache-Control", "no-cache");
-    
-    // Disable transparent retries by setting MaximumRedirectsAllowedAttribute to 0? No, this is for redirects.
-    // QNAM natively aborts and emits error if a chunked response is abruptly closed.
-
-    request.setRawHeader("MCP-Protocol-Version", m_protocolVersion.toUtf8());
-    if (!m_sessionId.isEmpty()) {
-        request.setRawHeader("MCP-Session-Id", m_sessionId.toUtf8());
-    }
     if (!m_lastEventId.isEmpty()) {
         request.setRawHeader("Last-Event-ID", m_lastEventId.toUtf8());
-    }
-    const QString token = currentBearerToken();
-    if (!token.isEmpty() && m_requestConfig.allowAuthorizationOverride) {
-        request.setRawHeader("Authorization", "Bearer " + token.toUtf8());
     }
 
     m_sseReply = m_network->get(request);
@@ -192,17 +168,16 @@ void QtHttpSseWorker::openSse() {
 
 void QtHttpSseWorker::handleSseReadyRead() {
     if (m_stopping || !m_sseReply) return;
-    
-    QByteArray data = m_sseReply->readAll();
-    if (!data.isEmpty()) {
-        m_lastDataTime.start();
-        m_parser.pushChunk(data.toStdString());
-    }
+
+    const QByteArray data = m_sseReply->readAll();
+    if (data.isEmpty()) return;
+
+    m_lastDataTime.start();
+    m_parser.pushChunk(data.toStdString());
 }
 
 void QtHttpSseWorker::handleSseFinished() {
-    if (m_stopping) return;
-    if (!m_sseConnected) return; // Prevent double handling
+    if (m_stopping || !m_sseConnected) return;
     m_sseConnected = false;
     m_healthCheckTimer->stop();
     scheduleReconnect();
@@ -233,12 +208,8 @@ void QtHttpSseWorker::handleSseEvent(const QtSseEvent& event) {
 }
 
 void QtHttpSseWorker::scheduleReconnect() {
-    if (m_stopping) return;
-    if (m_reconnectTimer->isActive()) return;
-    
-    // Exactly use m_retryMs without subtracting anything!
-    int waitTime = m_retryMs;
-    m_reconnectTimer->start(waitTime);
+    if (m_stopping || m_reconnectTimer->isActive()) return;
+    m_reconnectTimer->start(m_retryMs);
 }
 
 bool QtHttpSseWorker::postMessage(const QString& payload, int retryCount) {
@@ -257,19 +228,9 @@ bool QtHttpSseWorker::postMessage(const QString& payload, int retryCount) {
     }
     QNetworkRequest request;
     request.setUrl(QUrl(m_postUrl));
-    for (auto it = m_requestConfig.defaultHeaders.constBegin(); it != m_requestConfig.defaultHeaders.constEnd(); ++it) {
-        request.setRawHeader(it.key(), it.value());
-    }
+    setupRequestHeaders(request);
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
     request.setRawHeader("Accept", "application/json, text/event-stream");
-    request.setRawHeader("MCP-Protocol-Version", m_protocolVersion.toUtf8());
-    if (!m_sessionId.isEmpty()) {
-        request.setRawHeader("MCP-Session-Id", m_sessionId.toUtf8());
-    }
-    const QString token = currentBearerToken();
-    if (!token.isEmpty() && m_requestConfig.allowAuthorizationOverride) {
-        request.setRawHeader("Authorization", "Bearer " + token.toUtf8());
-    }
 
     QNetworkReply* reply = m_network->post(request, payload.toUtf8());
     connect(reply, &QNetworkReply::finished, this, [this, reply, payload, retryCount]() {
@@ -312,24 +273,7 @@ bool QtHttpSseWorker::postMessage(const QString& payload, int retryCount) {
         if (!body.isEmpty()) {
             QString contentType = reply->header(QNetworkRequest::ContentTypeHeader).toString();
             if (contentType.contains("text/event-stream", Qt::CaseInsensitive)) {
-                QtSseParser postParser;
-                postParser.setRetryCallback([this](int retryMs) {
-                    m_retryMs = retryMs;
-                });
-                postParser.setIdCallback([this](const std::string& id) {
-                    m_lastEventId = QString::fromStdString(id);
-                });
-                postParser.setEventCallback([this](const QtSseEvent& event) {
-                    if (!event.lastEventId.empty()) {
-                        m_lastEventId = QString::fromStdString(event.lastEventId);
-                    }
-                    emit messageReceived(QString::fromStdString(event.data));
-                });
-                std::string sseData = QString::fromUtf8(body).toStdString();
-                if (sseData.rfind("\n\n") == std::string::npos) {
-                    sseData += "\n\n";
-                }
-                postParser.pushChunk(sseData);
+                parseSseInlineBody(body);
             } else {
                 emit messageReceived(QString::fromUtf8(body));
             }
@@ -346,6 +290,28 @@ bool QtHttpSseWorker::postMessage(const QString& payload, int retryCount) {
     });
 
     return true;
+}
+
+void QtHttpSseWorker::parseSseInlineBody(const QByteArray& body) {
+    QtSseParser postParser;
+    postParser.setRetryCallback([this](int retryMs) {
+        m_retryMs = retryMs;
+    });
+    postParser.setIdCallback([this](const std::string& id) {
+        m_lastEventId = QString::fromStdString(id);
+    });
+    postParser.setEventCallback([this](const QtSseEvent& event) {
+        if (!event.lastEventId.empty()) {
+            m_lastEventId = QString::fromStdString(event.lastEventId);
+        }
+        emit messageReceived(QString::fromStdString(event.data));
+    });
+
+    std::string sseData = QString::fromUtf8(body).toStdString();
+    if (sseData.rfind("\n\n") == std::string::npos) {
+        sseData += "\n\n";
+    }
+    postParser.pushChunk(sseData);
 }
 
 void QtHttpSseWorker::flushPendingMessages() {

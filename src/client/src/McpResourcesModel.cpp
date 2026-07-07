@@ -1,7 +1,6 @@
 #include "mcp_qt_client/McpResourcesModel.h"
 #include "mcp_qt_client/McpQtClient.h"
 #include <QPointer>
-#include "mcp_qt_client/McpQtClient.h"
 #include <QJsonArray>
 
 namespace mcp_qt {

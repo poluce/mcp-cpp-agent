@@ -1,7 +1,6 @@
 #include "mcp_qt_client/McpToolsModel.h"
 #include "mcp_qt_client/McpQtClient.h"
 #include <QPointer>
-#include "mcp_qt_client/McpQtClient.h"
 
 namespace mcp_qt {
 

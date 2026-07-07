@@ -162,45 +162,41 @@ void QtProcessStdioTransport::setProtocolVersion(const std::string&) {
 
 void QtProcessStdioTransport::handleReadyReadStandardOutput() {
     QByteArray data = m_process->readAllStandardOutput();
-    
+
     std::vector<std::string> messages;
+    std::function<void(const std::string&)> msgCb;
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         m_buffer.append(data.constData(), data.size());
-        
+
         size_t pos = 0;
         while ((pos = m_buffer.find('\n')) != std::string::npos) {
             std::string line = m_buffer.substr(0, pos);
             if (!line.empty() && line.back() == '\r') {
                 line.pop_back();
             }
-            messages.push_back(line);
+            messages.push_back(std::move(line));
             m_buffer.erase(0, pos + 1);
         }
-    }
-    
-    std::function<void(const std::string&)> msgCb;
-    {
-        std::lock_guard<std::mutex> lock(m_mutex);
         msgCb = m_onMessage;
     }
-    
-    if (msgCb) {
-        for (const auto& msg : messages) {
-            if (!msg.empty()) {
-                auto start = msg.find_first_not_of(" \t\r\n");
-                if (start != std::string::npos) {
-                    auto end = msg.find_last_not_of(" \t\r\n");
-                    std::string_view trimmed(msg.data() + start, end - start + 1);
-                    
-                    if (trimmed.front() == '{' && trimmed.back() == '}') {
-                        msgCb(msg);
-                    } else {
-                        qWarning() << "[QtProcessStdioTransport] Filtered out dirty stdout message:"
-                                   << QString::fromStdString(msg);
-                    }
-                }
-            }
+
+    if (!msgCb) return;
+
+    for (const auto& msg : messages) {
+        if (msg.empty()) continue;
+
+        auto start = msg.find_first_not_of(" \t\r\n");
+        if (start == std::string::npos) continue;
+
+        auto end = msg.find_last_not_of(" \t\r\n");
+        std::string_view trimmed(msg.data() + start, end - start + 1);
+
+        if (trimmed.front() == '{' && trimmed.back() == '}') {
+            msgCb(msg);
+        } else {
+            qWarning() << "[QtProcessStdioTransport] Filtered out dirty stdout message:"
+                       << QString::fromStdString(msg);
         }
     }
 }
@@ -226,16 +222,21 @@ void QtProcessStdioTransport::handleProcessFinished(int exitCode, QProcess::Exit
 }
 
 void QtProcessStdioTransport::handleProcessError(QProcess::ProcessError error) {
-    std::string errStr = "QProcess error occurred: " + std::to_string(error);
+    std::function<void()> closeCb;
     std::function<void(const std::string&)> errCb;
     {
         std::lock_guard<std::mutex> lock(m_mutex);
+        if (!m_started) return;
+        m_started = false;
         errCb = m_onError;
+        closeCb = m_onClose;
     }
     if (errCb) {
-        errCb(errStr);
+        errCb("QProcess error occurred: " + std::to_string(error));
     }
-    handleProcessFinished(-1, QProcess::CrashExit);
+    if (closeCb) {
+        closeCb();
+    }
 }
 
 } // namespace mcp_qt

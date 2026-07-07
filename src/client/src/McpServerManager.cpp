@@ -44,12 +44,12 @@ bool McpServerManager::loadConfig(const QJsonObject& configObject) {
     }
 
     QSet<QString> loadedServers;
-    for (auto it = serversObj.begin(); it != serversObj.end(); ++it) {
+    for (auto it = serversObj.constBegin(); it != serversObj.constEnd(); ++it) {
         QString serverName = it.key();
         if (!it.value().isObject()) continue;
         QJsonObject serverCfg = it.value().toObject();
 
-        if (serverCfg.value(QStringLiteral("disabled")).toBool(false) == true) {
+        if (serverCfg.value(QStringLiteral("disabled")).toBool(false)) {
             continue;
         }
 
@@ -58,14 +58,12 @@ bool McpServerManager::loadConfig(const QJsonObject& configObject) {
         // 注意：系统代理已由 QtProcessStdioTransport 自动探测注入，此处仅处理用户自定义 env
         if (serverCfg.contains(QStringLiteral("env")) && serverCfg.value(QStringLiteral("env")).isObject()) {
             QJsonObject envs = serverCfg.value(QStringLiteral("env")).toObject();
-            for (auto envIt = envs.begin(); envIt != envs.end(); ++envIt) {
+            for (auto envIt = envs.constBegin(); envIt != envs.constEnd(); ++envIt) {
                 QString envVal;
-                if (envIt.value().isString()) {
-                    envVal = envIt.value().toString();
-                } else if (envIt.value().isDouble()) {
-                    envVal = QString::number(envIt.value().toDouble());
-                } else if (envIt.value().isBool()) {
+                if (envIt.value().isBool()) {
                     envVal = envIt.value().toBool() ? QStringLiteral("true") : QStringLiteral("false");
+                } else {
+                    envVal = envIt.value().toVariant().toString();
                 }
                 processEnv.insert(envIt.key(), envVal); // 用户自定义 env 覆盖自动提取的代理
             }
@@ -79,7 +77,7 @@ bool McpServerManager::loadConfig(const QJsonObject& configObject) {
         QMap<QString, QString> httpHeaders;
         if (serverCfg.contains(QStringLiteral("headers")) && serverCfg.value(QStringLiteral("headers")).isObject()) {
             QJsonObject hdrs = serverCfg.value(QStringLiteral("headers")).toObject();
-            for (auto hdrIt = hdrs.begin(); hdrIt != hdrs.end(); ++hdrIt) {
+            for (auto hdrIt = hdrs.constBegin(); hdrIt != hdrs.constEnd(); ++hdrIt) {
                 if (hdrIt.value().isString()) {
                     httpHeaders.insert(hdrIt.key(), hdrIt.value().toString());
                 }

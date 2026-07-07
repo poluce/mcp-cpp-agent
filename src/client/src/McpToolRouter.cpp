@@ -2,7 +2,22 @@
 #include <mcp_qt_client/McpServerManager.h>
 #include <QDebug>
 
+#include <QPromise>
+
 namespace mcp_qt {
+
+namespace {
+    QFuture<McpResult> makeErrorFuture(const QString& errorMsg) {
+        QPromise<McpResult> promise;
+        promise.start();
+        McpResult errRes;
+        errRes.isError = true;
+        errRes.errorString = errorMsg;
+        promise.addResult(errRes);
+        promise.finish();
+        return promise.future();
+    }
+}
 
 McpToolRouter::McpToolRouter(McpServerManager* manager, QObject* parent)
     : QObject(parent), m_manager(manager) {}
@@ -81,26 +96,12 @@ QJsonArray McpToolRouter::exportAllToolsAsMcpSchema() const {
 QFuture<McpResult> McpToolRouter::callToolFuture(const QString& nameSpacedToolName, const QJsonObject& arguments) {
     auto parsed = parseToolName(nameSpacedToolName);
     if (parsed.first.isEmpty()) {
-        QPromise<McpResult> promise;
-        promise.start();
-        McpResult errRes;
-        errRes.isError = true;
-        errRes.errorString = QStringLiteral("Failed to resolve server for namespaced tool: ") + nameSpacedToolName;
-        promise.addResult(errRes);
-        promise.finish();
-        return promise.future();
+        return makeErrorFuture(QStringLiteral("Failed to resolve server for namespaced tool: ") + nameSpacedToolName);
     }
 
     auto client = m_manager->client(parsed.first);
     if (!client) {
-        QPromise<McpResult> promise;
-        promise.start();
-        McpResult errRes;
-        errRes.isError = true;
-        errRes.errorString = QStringLiteral("Client not found for server: ") + parsed.first;
-        promise.addResult(errRes);
-        promise.finish();
-        return promise.future();
+        return makeErrorFuture(QStringLiteral("Client not found for server: ") + parsed.first);
     }
 
     return client->callToolFuture(parsed.second, arguments);
@@ -109,25 +110,24 @@ QFuture<McpResult> McpToolRouter::callToolFuture(const QString& nameSpacedToolNa
 void McpToolRouter::callToolAsync(const QString& nameSpacedToolName, const QJsonObject& arguments,
                                   std::function<void(McpResult)> callback,
                                   McpQtClient::ProgressCallback onProgress) {
-    auto parsed = parseToolName(nameSpacedToolName);
-    if (parsed.first.isEmpty()) {
-        McpResult errRes;
-        errRes.isError = true;
-        errRes.errorString = QStringLiteral("Failed to resolve server for namespaced tool: ") + nameSpacedToolName;
+    auto invokeError = [this, callback](const QString& msg) {
         if (callback) {
+            McpResult errRes;
+            errRes.isError = true;
+            errRes.errorString = msg;
             QMetaObject::invokeMethod(this, [=]() { callback(errRes); }, Qt::QueuedConnection);
         }
+    };
+
+    auto parsed = parseToolName(nameSpacedToolName);
+    if (parsed.first.isEmpty()) {
+        invokeError(QStringLiteral("Failed to resolve server for namespaced tool: ") + nameSpacedToolName);
         return;
     }
 
     auto client = m_manager->client(parsed.first);
     if (!client) {
-        McpResult errRes;
-        errRes.isError = true;
-        errRes.errorString = QStringLiteral("Client not found for server: ") + parsed.first;
-        if (callback) {
-            QMetaObject::invokeMethod(this, [=]() { callback(errRes); }, Qt::QueuedConnection);
-        }
+        invokeError(QStringLiteral("Client not found for server: ") + parsed.first);
         return;
     }
 

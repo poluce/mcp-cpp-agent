@@ -111,15 +111,22 @@ struct PromiseGuard {
 // ============================================================================
 // QNAM 同步 HTTP（整个 Qt 客户端零 libcurl 依赖）
 // ============================================================================
+static QByteArray _executeSync(QNetworkReply* p) {
+    QEventLoop l;
+    QObject::connect(p, &QNetworkReply::finished, &l, &QEventLoop::quit);
+    l.exec();
+    QByteArray rb = p->readAll();
+    p->deleteLater();
+    return rb;
+}
+
 static QByteArray _get(const QString& u){
     QNetworkAccessManager n; QNetworkRequest r{QUrl{u}}; r.setRawHeader("Accept","application/json");
-    QNetworkReply* p=n.get(r,QByteArray()); QEventLoop l; QObject::connect(p,&QNetworkReply::finished,&l,&QEventLoop::quit); l.exec();
-    QByteArray b=p->readAll(); p->deleteLater(); return b;
+    return _executeSync(n.get(r));
 }
 static QByteArray _post(const QString& u, const QByteArray& b, const char* ct){
     QNetworkAccessManager n; QNetworkRequest r{QUrl{u}}; r.setHeader(QNetworkRequest::ContentTypeHeader,ct); r.setRawHeader("Accept","application/json");
-    QNetworkReply* p=n.post(r,b); QEventLoop l; QObject::connect(p,&QNetworkReply::finished,&l,&QEventLoop::quit); l.exec();
-    QByteArray rb=p->readAll(); p->deleteLater(); return rb;
+    return _executeSync(n.post(r,b));
 }
 // POST with custom headers (for token exchange with Basic Auth)
 static QByteArray _postH(const QString& u, const QByteArray& b, const QMap<QByteArray,QByteArray>& extraHeaders){
@@ -127,8 +134,7 @@ static QByteArray _postH(const QString& u, const QByteArray& b, const QMap<QByte
     r.setHeader(QNetworkRequest::ContentTypeHeader,"application/x-www-form-urlencoded");
     r.setRawHeader("Accept","application/json");
     for(auto it=extraHeaders.begin();it!=extraHeaders.end();++it) r.setRawHeader(it.key(),it.value());
-    QNetworkReply* p=n.post(r,b); QEventLoop l; QObject::connect(p,&QNetworkReply::finished,&l,&QEventLoop::quit); l.exec();
-    QByteArray rb=p->readAll(); p->deleteLater(); return rb;
+    return _executeSync(n.post(r,b));
 }
 
 // ============================================================================
@@ -1293,15 +1299,7 @@ std::vector<McpBatchCallResult> McpQtClient::callToolsConcurrent(const std::vect
 // ========== Resources ==========
 
 QJsonObject McpQtClient::listResources(int to){
-    if (!m_session) return {};
-    auto resultData = std::make_shared<nlohmann::json>();
-    runSyncWithTimeout([&](const std::function<void()>& quit) {
-        m_session->listResources("", [resultData, quit](const nlohmann::json& result, const std::string& nextCursor, const nlohmann::json& error) {
-            *resultData = result;
-            quit();
-        });
-    }, to);
-    return _qj(*resultData);
+    return listResources(QString(), nullptr, to);
 }
 QJsonObject McpQtClient::listResources(const QString& c,QString* n,int to){
     if (!m_session) return {};
@@ -1318,9 +1316,20 @@ QJsonObject McpQtClient::listResources(const QString& c,QString* n,int to){
     return _qj(*resultData);
 }
 QJsonObject McpQtClient::fetchAllResources(int to) {
-    QJsonObject all; QJsonArray arr; QString c;
-    do { QString nc; auto r=listResources(c,&nc,to); QJsonArray ta=r.value("resources").toArray(); for(const auto& x:ta) arr.append(x); c=nc; } while(!c.isEmpty());
-    all["resources"] = arr; return all;
+    QJsonObject all;
+    QJsonArray arr;
+    QString c;
+    do {
+        QString nc;
+        auto r = listResources(c, &nc, to);
+        QJsonArray ta = r.value("resources").toArray();
+        for (const auto& x : ta) {
+            arr.append(x);
+        }
+        c = nc;
+    } while (!c.isEmpty());
+    all["resources"] = arr;
+    return all;
 }
 
 void McpQtClient::listResourcesAsync(const QString& cursor, std::function<void(const QJsonObject&, const QString&, const QString&)> callback) {
@@ -1494,15 +1503,7 @@ void McpQtClient::unsubscribeResourceByTokenAsync(const QString& uri, int router
 
 // ========== Resource Templates ==========
 std::vector<mcp::McpResourceTemplate> McpQtClient::listResourceTemplates(int to){
-    if (!m_session) return {};
-    auto resultData = std::make_shared<std::vector<mcp::McpResourceTemplate>>();
-    runSyncWithTimeout([&](const std::function<void()>& quit) {
-        m_session->listResourceTemplates("", [resultData, quit](const std::vector<mcp::McpResourceTemplate>& templates, const std::string& nextCursor, const nlohmann::json& error) {
-            *resultData = templates;
-            quit();
-        });
-    }, to);
-    return *resultData;
+    return listResourceTemplates(QString(), nullptr, to);
 }
 std::vector<mcp::McpResourceTemplate> McpQtClient::listResourceTemplates(const QString& c,QString* n,int to){
     if (!m_session) return {};
@@ -1519,8 +1520,14 @@ std::vector<mcp::McpResourceTemplate> McpQtClient::listResourceTemplates(const Q
     return *resultData;
 }
 std::vector<mcp::McpResourceTemplate> McpQtClient::fetchAllResourceTemplates(int to) {
-    std::vector<mcp::McpResourceTemplate> all; QString c;
-    do { QString nc; auto r=listResourceTemplates(c,&nc,to); all.insert(all.end(),r.begin(),r.end()); c=nc; } while(!c.isEmpty());
+    std::vector<mcp::McpResourceTemplate> all;
+    QString c;
+    do {
+        QString nc;
+        auto r = listResourceTemplates(c, &nc, to);
+        all.insert(all.end(), r.begin(), r.end());
+        c = nc;
+    } while (!c.isEmpty());
     return all;
 }
 
@@ -1548,15 +1555,7 @@ std::unique_ptr<McpResourceTemplatesModel> McpQtClient::createResourceTemplatesM
 
 // ========== Prompts ==========
 QJsonObject McpQtClient::listPrompts(int to){
-    if (!m_session) return {};
-    auto resultData = std::make_shared<nlohmann::json>();
-    runSyncWithTimeout([&](const std::function<void()>& quit) {
-        m_session->listPrompts("", [resultData, quit](const nlohmann::json& result, const std::string& nextCursor, const nlohmann::json& error) {
-            *resultData = result;
-            quit();
-        });
-    }, to);
-    return _qj(*resultData);
+    return listPrompts(QString(), nullptr, to);
 }
 QJsonObject McpQtClient::listPrompts(const QString& c,QString* n,int to){
     if (!m_session) return {};
@@ -1573,9 +1572,20 @@ QJsonObject McpQtClient::listPrompts(const QString& c,QString* n,int to){
     return _qj(*resultData);
 }
 QJsonObject McpQtClient::fetchAllPrompts(int to) {
-    QJsonObject all; QJsonArray arr; QString c;
-    do { QString nc; auto r=listPrompts(c,&nc,to); QJsonArray ta=r.value("prompts").toArray(); for(const auto& x:ta) arr.append(x); c=nc; } while(!c.isEmpty());
-    all["prompts"] = arr; return all;
+    QJsonObject all;
+    QJsonArray arr;
+    QString c;
+    do {
+        QString nc;
+        auto r = listPrompts(c, &nc, to);
+        QJsonArray ta = r.value("prompts").toArray();
+        for (const auto& x : ta) {
+            arr.append(x);
+        }
+        c = nc;
+    } while (!c.isEmpty());
+    all["prompts"] = arr;
+    return all;
 }
 
 void McpQtClient::listPromptsAsync(const QString& cursor, std::function<void(const QJsonObject&, const QString&, const QString&)> callback) {
