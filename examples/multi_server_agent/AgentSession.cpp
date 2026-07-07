@@ -49,8 +49,17 @@ void AgentSession::start(const AgentRunOptions& options) {
     // m_watchdogTimer->start(options.timeoutMs * 6);
 
     // 不再这里加载配置。由 AgentMainWindow 提前加载。
-    // 如果已经准备好了，直接返回就绪，否则等待信号
-    if (m_manager->isAllToolsReady()) {
+    // 如果所有服务器都已经连接且工具就绪，直接返回就绪，否则等待信号
+    bool anyNotConnected = false;
+    for (const auto& name : m_manager->serverNames()) {
+        auto c = m_manager->client(name);
+        if (c && !c->isConnected()) {
+            anyNotConnected = true;
+            break;
+        }
+    }
+
+    if (!anyNotConnected && m_manager->isAllToolsReady()) {
         QTimer::singleShot(0, this, [this, task = options.task]() {
             if (!m_taskStarted) runTask(task);
         });
@@ -71,9 +80,15 @@ void AgentSession::start(const AgentRunOptions& options) {
     });
     heartbeat->start(1500);
 
-    // 策略 1: 所有服务器预热完成 → 立即起跑
+    // 策略 1: 所有服务器预热完成 → 如果全部在线则立即起跑
     connect(m_manager, &mcp_qt::McpServerManager::allToolsReady, this, [this, task = options.task]() {
-        if (!m_taskStarted) runTask(task);
+        if (m_taskStarted) return;
+        bool allOnline = true;
+        for (const auto& name : m_manager->serverNames()) {
+            auto c = m_manager->client(name);
+            if (!c || !c->isConnected()) { allOnline = false; break; }
+        }
+        if (allOnline) runTask(task);
     });
 
     // 策略 2: 单个服务器连接成功 → 如果全部已连上也起跑（兜底，防止 allToolsReady 信号丢失）

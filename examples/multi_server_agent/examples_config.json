@@ -5,7 +5,7 @@
             "headers": {
                 "Authorization": "Bearer as_sk_606afb73b54ef0ebb61972bea522744f"
             },
-            "type": "stateless_http",
+            "type": "sse",
             "url": "https://api.anysearch.com/mcp"
         },
         "mock-search-server": {

@@ -140,6 +140,14 @@ int main(int argc, char* argv[]) {
     }
 
     mcp_qt::McpServerManager manager;
+    
+    // 🌟 在命令行模式下，需要手动先加载 config，因为 AgentSession 不再负责 loadConfig
+    QString configPath = parser.value(QStringLiteral("config"));
+    if (!manager.loadConfigFile(configPath)) {
+        qCritical() << "Error: Failed to load config file" << configPath;
+        return 3;
+    }
+
     DiagnosticReporter reporter;
     
     std::shared_ptr<mcp_agent::ILlmBackend> backend;
