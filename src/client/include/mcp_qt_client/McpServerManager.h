@@ -44,6 +44,7 @@ public:
     std::shared_ptr<McpQtClient> client(const QString& serverName) const;
     QHash<QString, std::shared_ptr<McpQtClient>> clients() const;
     QStringList serverNames() const;
+    McpServerState serverState(const QString& serverName) const;
 
     /// 所有已注册服务器是否都已完成工具预热（或已离线）
     bool isAllToolsReady() const;
@@ -71,8 +72,10 @@ signals:
     void allToolsReady();
 
 private:
+    static void configureBuilder(McpQtClientBuilder& builder, const McpServerConfig& cfg);
     void processHttpServerConfig(const McpServerConfig& cfg);
     void setupClientSignals(const QString& serverName, const std::shared_ptr<McpQtClient>& client);
+    void warmupClientTools(const QString& serverName, const std::shared_ptr<McpQtClient>& client);
     void updateServerState(const QString& serverName, McpServerState state);
 
     QHash<QString, std::shared_ptr<McpQtClient>> m_clients;

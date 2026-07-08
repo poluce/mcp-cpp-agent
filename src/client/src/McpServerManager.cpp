@@ -4,6 +4,8 @@
 #include <QJsonArray>
 #include <QDebug>
 #include <QPointer>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
 
 namespace mcp_qt {
 
@@ -19,8 +21,12 @@ bool McpServerManager::loadServers(std::shared_ptr<IMcpConfigLoader> loader) {
     return loadServers(loader->load());
 }
 
-#include <QNetworkAccessManager>
-#include <QNetworkReply>
+void McpServerManager::configureBuilder(McpQtClientBuilder& builder, const McpServerConfig& cfg) {
+    if (!cfg.env.isEmpty()) builder.setEnvironment(cfg.env);
+    if (!cfg.headers.isEmpty()) builder.setHttpHeaders(cfg.headers);
+    builder.setClientInfo(cfg.serverName, QStringLiteral("1.0.0"));
+    if (!cfg.nameSpace.isEmpty()) builder.setNamespace(cfg.nameSpace);
+}
 
 bool McpServerManager::loadServers(const QList<McpServerConfig>& configs) {
     QSet<QString> loadedServers;
@@ -33,12 +39,9 @@ bool McpServerManager::loadServers(const QList<McpServerConfig>& configs) {
             processHttpServerConfig(cfg);
         } else if (!cfg.command.isEmpty()) {
             McpQtClientBuilder builder;
-            if (!cfg.env.isEmpty()) builder.setEnvironment(cfg.env);
-            if (!cfg.headers.isEmpty()) builder.setHttpHeaders(cfg.headers);
+            configureBuilder(builder, cfg);
             builder.setTransportStdio(cfg.command, cfg.args);
-            builder.setClientInfo(cfg.serverName, QStringLiteral("1.0.0"));
-            if (!cfg.nameSpace.isEmpty()) builder.setNamespace(cfg.nameSpace);
-            
+
             auto clientPtr = builder.buildAndConnectAsync();
             if (clientPtr) registerClient(cfg.serverName, clientPtr);
         } else {
@@ -61,21 +64,18 @@ void McpServerManager::processHttpServerConfig(const McpServerConfig& cfg) {
     auto buildAndRegister = [safeThis](const McpServerConfig& c) {
         if (!safeThis) return;
         McpQtClientBuilder builder;
-        if (!c.env.isEmpty()) builder.setEnvironment(c.env);
-        if (!c.headers.isEmpty()) builder.setHttpHeaders(c.headers);
+        configureBuilder(builder, c);
         if (c.type == QStringLiteral("stateless_http")) {
             builder.setTransportStatelessHttp(c.url);
         } else {
             builder.setTransportHttp(c.url);
         }
-        builder.setClientInfo(c.serverName, QStringLiteral("1.0.0"));
-        if (!c.nameSpace.isEmpty()) builder.setNamespace(c.nameSpace);
-        
+
         auto clientPtr = builder.buildAndConnectAsync();
         if (clientPtr) safeThis->registerClient(c.serverName, clientPtr);
     };
 
-    if (cfg.type == QStringLiteral("stateless_http") || cfg.type == QStringLiteral("http")) {
+    if (cfg.type == QStringLiteral("stateless_http") || cfg.type == QStringLiteral("http") || cfg.type == QStringLiteral("sse")) {
         buildAndRegister(cfg);
     } else {
         // Auto negotiate via HEAD request
@@ -151,6 +151,10 @@ QStringList McpServerManager::serverNames() const {
     return m_clients.keys();
 }
 
+McpServerState McpServerManager::serverState(const QString& serverName) const {
+    return m_serverStates.value(serverName, McpServerState::Error);
+}
+
 void McpServerManager::closeAll(int timeoutMs) {
     for (const auto& client : m_clients) {
         if (client) {
@@ -167,30 +171,33 @@ void McpServerManager::updateServerState(const QString& serverName, McpServerSta
     }
 }
 
+void McpServerManager::warmupClientTools(const QString& serverName, const std::shared_ptr<McpQtClient>& client) {
+    // 连接即预热：自动拉取全部工具并缓存
+    if (client->cachedTools().empty()) {
+        QPointer<McpServerManager> safeThis(this);
+        client->fetchAllToolsAsync([safeThis, serverName](const std::vector<McpQtTool>& tools) {
+            if (!safeThis) return;
+            qInfo().noquote() << "[McpServerManager]" << serverName << "预热完成:" << tools.size() << "个工具";
+            emit safeThis->clientToolsReady(serverName, static_cast<int>(tools.size()));
+            safeThis->updateServerState(serverName, McpServerState::Ready);
+            if (safeThis->isAllToolsReady()) {
+                emit safeThis->allToolsReady();
+            }
+        });
+    } else {
+        emit clientToolsReady(serverName, static_cast<int>(client->cachedTools().size()));
+        updateServerState(serverName, McpServerState::Ready);
+        if (isAllToolsReady()) {
+            emit allToolsReady();
+        }
+    }
+}
+
 void McpServerManager::setupClientSignals(const QString& serverName, const std::shared_ptr<McpQtClient>& client) {
     connect(client.get(), &McpQtClient::connected, this, [this, serverName, client]() {
         updateServerState(serverName, McpServerState::Connecting);
         emit clientConnected(serverName);
-
-        // 连接即预热：自动拉取全部工具并缓存
-        if (client->cachedTools().empty()) {
-            QPointer<McpServerManager> safeThis(this);
-            client->fetchAllToolsAsync([safeThis, serverName, weakClient = std::weak_ptr<McpQtClient>(client)](const std::vector<McpQtTool>& tools) {
-                if (!safeThis) return; // Manager 已销毁，安全退出
-                qInfo().noquote() << "[McpServerManager]" << serverName << "预热完成:" << tools.size() << "个工具";
-                emit safeThis->clientToolsReady(serverName, static_cast<int>(tools.size()));
-                safeThis->updateServerState(serverName, McpServerState::Ready);
-                if (safeThis->isAllToolsReady()) {
-                    emit safeThis->allToolsReady();
-                }
-            });
-        } else {
-            emit clientToolsReady(serverName, static_cast<int>(client->cachedTools().size()));
-            updateServerState(serverName, McpServerState::Ready);
-            if (isAllToolsReady()) {
-                emit allToolsReady();
-            }
-        }
+        warmupClientTools(serverName, client);
     });
     connect(client.get(), &McpQtClient::disconnected, this, [this, serverName]() {
         updateServerState(serverName, McpServerState::Pending);

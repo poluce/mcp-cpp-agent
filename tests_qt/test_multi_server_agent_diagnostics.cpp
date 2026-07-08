@@ -1,15 +1,15 @@
 #include "tests/common.h"
-#include "examples/multi_server_agent/DiagnosticReporter.h"
+#include "mcp_qt_client/McpDiagnosticReporter.h"
 
 void test_multi_server_agent_diagnostics_groups_entries_by_stage() {
-    DiagnosticReporter reporter;
+    mcp_qt::McpDiagnosticReporter reporter;
 
     reporter.addExecutionLogLine(QStringLiteral("Loaded config and discovered tools"));
-    reporter.addObservation(QStringLiteral("tool/discovery"), QStringLiteral("Loaded 3 namespaced tools"));
-    reporter.addProblem(QStringLiteral("tool/discovery"),
+    reporter.addInfo(QStringLiteral("tool/discovery"), QStringLiteral("Loaded 3 namespaced tools"));
+    reporter.addError(QStringLiteral("tool/discovery"),
                         QStringLiteral("Cached tool list was empty until toolsChanged arrived"),
                         QStringLiteral("Expose an explicit readiness API for tool cache"));
-    reporter.addProblem(QStringLiteral("tool/call"),
+    reporter.addError(QStringLiteral("tool/call"),
                         QStringLiteral("Argument construction stopped before invocation"),
                         QStringLiteral("Add higher-level schema helpers"));
 

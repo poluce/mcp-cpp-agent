@@ -477,11 +477,7 @@ void AgentMainWindow::handleRunTask() {
     } else {
         m_llmBackend = std::make_shared<MockLlmBackend>();
     }
-
-    m_reporter = new DiagnosticReporter();
-
-    // 创建新会话
-    m_session = new AgentSession(m_manager, m_llmBackend, m_reporter, this);
+    m_session = new AgentSession(m_host, m_llmBackend, this);
     
     // 监听 ReAct 循环信号并着色展示
     connect(m_session->executor(), &LlmAgentExecutor::stepProgress, this, &AgentMainWindow::handleStepProgress);
@@ -502,19 +498,25 @@ void AgentMainWindow::handleRunTask() {
 
 void AgentMainWindow::updateServerList() {
     m_serverListWidget->clear();
-    if (!m_manager) return;
+    if (!m_host) return;
 
-    for (const auto& name : m_manager->serverNames()) {
-        auto client = m_manager->client(name);
-        bool connected = client && client->isConnected();
-        int toolCount = connected ? static_cast<int>(client->cachedTools().size()) : 0;
+    for (const auto& name : m_host->serverNames()) {
+        auto state = m_host->serverState(name);
+        bool ready = (state == mcp_qt::McpServerState::Ready);
+        bool connecting = (state == mcp_qt::McpServerState::Connecting);
 
-        QString label = connected
-            ? QString("🟢 %1 (%2 tools)").arg(name).arg(toolCount)
-            : QString("🔴 %1").arg(name);
+        QString label;
+        if (ready) {
+            int count = m_host->serverToolCount(name);
+            label = QString("🟢 %1 (%2 tools)").arg(name).arg(count);
+        } else if (connecting) {
+            label = QString("⌛ %1 (connecting)").arg(name);
+        } else {
+            label = QString("🔴 %1").arg(name);
+        }
 
         auto* item = new QListWidgetItem(label);
-        item->setForeground(QBrush(connected ? QColor("#28a745") : QColor("#dc3545")));
+        item->setForeground(QBrush(ready ? QColor("#28a745") : QColor("#dc3545")));
         m_serverListWidget->addItem(item);
     }
 }
@@ -620,8 +622,6 @@ void AgentMainWindow::handleSessionFinished(int exitCode) {
             m_session->deleteLater();
             m_session = nullptr;
         }
-        delete m_reporter;
-        m_reporter = nullptr;
     }
 }
 
@@ -651,8 +651,6 @@ void AgentMainWindow::handleResetSession() {
         m_session->deleteLater();
         m_session = nullptr;
     }
-    delete m_reporter;
-    m_reporter = nullptr;
 
     m_logBlackboard->clear();
     m_logBlackboard->setHtml(QStringLiteral("<h3 style='color: #8e8e93; font-family: Segoe UI, Microsoft YaHei;'>会话已重置。新对话已就绪，请输入您的任务指令并点击启动...</h3>"));
@@ -748,46 +746,39 @@ void AgentMainWindow::appendLogHtml(const QString& html) {
 }
 
 void AgentMainWindow::loadAndConnectServers(const QString& configPath) {
-    if (m_manager) {
-        m_manager->deleteLater();
+    if (m_host) {
+        m_host->deleteLater();
     }
-    m_manager = new mcp_qt::McpServerManager(this);
+    m_host = new mcp_qt::McpHost(this);
     m_serverListWidget->clear();
     m_serverLogConsole->clear();
 
-    connect(m_manager, &mcp_qt::McpServerManager::clientConnected, this, &AgentMainWindow::updateServerList);
-    connect(m_manager, &mcp_qt::McpServerManager::clientErrorOccurred, this, &AgentMainWindow::updateServerList);
-
-    connect(m_manager, &mcp_qt::McpServerManager::clientConnected, this, [this](const QString& name) {
-        appendLogHtml(QString("<div style='color:#34c759;'>🟢 %1 已连接，正在预热工具...</div>").arg(name.toHtmlEscaped()));
-    });
-    connect(m_manager, &mcp_qt::McpServerManager::clientToolsReady, this, [this](const QString& name, int count) {
-        appendLogHtml(QString("<div style='color:#007aff;'>🔧 %1 预热完成: %2 个工具</div>").arg(name.toHtmlEscaped()).arg(count));
+    connect(m_host, &mcp_qt::McpHost::serverStateChanged, this, [this]() {
         updateServerList();
     });
-    connect(m_manager, &mcp_qt::McpServerManager::allToolsReady, this, [this]() {
+
+    connect(m_host, &mcp_qt::McpHost::hostReady, this, [this](bool success, const QString& msg) {
         if (!m_isRunning && !m_sessionActive) {
             m_runBtn->setEnabled(true);
             m_runBtn->setText(QStringLiteral("⚡ 启动 Agent 任务"));
         }
+        if (!success) {
+            appendLogHtml(QString("<div style='color:red;'>%1</div>").arg(msg.toHtmlEscaped()));
+            m_serverLogConsole->append(m_host->getDiagnosticReport());
+        }
     });
 
-    connect(m_manager, &mcp_qt::McpServerManager::clientConnected, this, [this](const QString& name) {
-        auto client = m_manager->client(name);
-        if (!client) return;
-        connect(client.get(), &mcp_qt::McpQtClient::errorOccurred, this, [this, name](const mcp_qt::McpError& err) {
-            m_serverLogConsole->append(QString("[%1] %2").arg(name, err.message));
-        });
+    connect(m_host, &mcp_qt::McpHost::errorOccurred, this, [this](const QString& name, const mcp_qt::McpError& err) {
+        m_serverLogConsole->append(QString("[%1] %2").arg(name, err.message));
     });
 
     appendLogHtml(QStringLiteral("<div style='color: #6c757d;'>正在加载配置文件并启动 MCP 服务端进程...</div>"));
-    auto loader = std::make_shared<mcp_qt::McpJsonConfigLoader>(mcp_qt::McpJsonConfigLoader::fromFile(configPath));
-    if (!m_manager->loadServers(loader)) {
+    
+    if (!m_host->loadConfigFromFile(configPath)) {
         appendLogHtml(QStringLiteral("<div style='color: red;'>加载配置文件失败！</div>"));
+    } else {
+        m_host->start(30000);
     }
-
-    // 开启 30 秒一次的保活心跳，自动检测断连并触发重连
-    m_manager->startHeartbeat(30000);
 }
 
 } // namespace mcp_agent

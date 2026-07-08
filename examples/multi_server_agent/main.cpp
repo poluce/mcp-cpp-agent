@@ -10,10 +10,9 @@
 #include <iostream>
 
 #include "examples/multi_server_agent/AgentSession.h"
-#include "examples/multi_server_agent/DiagnosticReporter.h"
 #include "LlmBackends.h"
 #include "AgentMainWindow.h"
-#include "mcp_qt_client/McpServerManager.h"
+#include "mcp_qt_client/McpHost.h"
 
 #include <mutex>
 
@@ -139,16 +138,14 @@ int main(int argc, char* argv[]) {
         return 2;
     }
 
-    mcp_qt::McpServerManager manager;
+    mcp_qt::McpHost host;
     
     // 🌟 在命令行模式下，需要手动先加载 config，因为 AgentSession 不再负责 loadConfig
     QString configPath = parser.value(QStringLiteral("config"));
-    if (!manager.loadConfigFile(configPath)) {
+    if (!host.loadConfigFromFile(configPath)) {
         qCritical() << "Error: Failed to load config file" << configPath;
         return 3;
     }
-
-    DiagnosticReporter reporter;
     
     std::shared_ptr<mcp_agent::ILlmBackend> backend;
     if (parser.isSet(QStringLiteral("use-real-llm"))) {
@@ -185,13 +182,12 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    AgentSession session(&manager, backend, &reporter);
+    AgentSession session(&host, backend);
 
     QObject::connect(&session, &AgentSession::finished, &app, [&](int exitCode) {
         // 利用 qInfo() 代替 stdout/stderr 直写，自动写入指定的日志文件中
         qInfo().noquote() << "[main] finished signal received, exitCode=" << exitCode;
-        qInfo().noquote() << "Agent Execution Log\n===================\n" << reporter.renderExecutionLog();
-        qInfo().noquote() << "SDK Diagnostic Report\n=====================\n" << reporter.renderText();
+        qInfo().noquote() << "SDK Diagnostic Report\n=====================\n" << host.getDiagnosticReport();
         qInfo().noquote() << "[main] exiting via std::exit";
         std::exit(exitCode);
     });
@@ -207,8 +203,17 @@ int main(int argc, char* argv[]) {
     options.apiKey = parser.value(QStringLiteral("api-key"));
     options.modelName = parser.value(QStringLiteral("model"));
 
-    QTimer::singleShot(0, &session, [options, &session]() {
+    QObject::connect(&host, &mcp_qt::McpHost::hostReady, &app, [&](bool success, const QString& msg) {
+        if (!success) {
+            qCritical() << "Error: Failed to start host:" << msg;
+            std::exit(1);
+        }
         session.start(options);
+    });
+
+    // 延时启动 host
+    QTimer::singleShot(0, &host, [options, &host]() {
+        host.start(options.timeoutMs);
     });
 
     return app.exec();

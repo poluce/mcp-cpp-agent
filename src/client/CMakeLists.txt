@@ -24,6 +24,10 @@ add_library(mcp_qt_client STATIC
     src/McpPromptRouter.cpp
     include/mcp_qt_client/McpResourceRouter.h
     src/McpResourceRouter.cpp
+    include/mcp_qt_client/McpHost.h
+    src/McpHost.cpp
+    include/mcp_qt_client/McpDiagnosticReporter.h
+    src/McpDiagnosticReporter.cpp
 )
 
 target_include_directories(mcp_qt_client PUBLIC

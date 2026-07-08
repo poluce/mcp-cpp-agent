@@ -1,0 +1,81 @@
+#pragma once
+
+#include "mcp_qt_client/McpServerManager.h"
+#include "mcp_qt_client/McpToolRouter.h"
+#include "mcp_qt_client/McpPromptRouter.h"
+#include "mcp_qt_client/McpResourceRouter.h"
+#include "mcp_qt_client/McpDiagnosticReporter.h"
+#include <QObject>
+#include <QStringList>
+#include <QTimer>
+#include <QJsonArray>
+#include <QMap>
+
+namespace mcp_qt {
+
+class McpHost : public QObject {
+    Q_OBJECT
+public:
+    explicit McpHost(QObject* parent = nullptr);
+    ~McpHost() override;
+
+    // ================= 1. Configuration & Lifecycle =================
+    bool loadConfigFromFile(const QString& configFilePath);
+    bool loadConfigFromJson(const QJsonObject& jsonObj);
+    void addServerConfig(const McpServerConfig& config);
+    
+    // Starts enabled servers asynchronously. Emits hostReady when done or timeout occurs.
+    void start(int timeoutMs = 30000); 
+    void stop();
+
+    // ================= 2. Server Management =================
+    QStringList serverNames() const;
+    void setServerEnabled(const QString& serverName, bool enabled);
+    bool isServerEnabled(const QString& serverName) const;
+    
+    McpServerState serverState(const QString& serverName) const;
+    QString serverErrorMessage(const QString& serverName) const;
+    int serverToolCount(const QString& serverName) const;
+
+    // ================= 3. Unified Routing =================
+    QJsonArray exportAllToolsToLlm(McpQtClient::LlmFormat format = McpQtClient::LlmFormat::OpenAI) const;
+    
+    void callToolAsync(const QString& toolName, const QJsonObject& args, std::function<void(McpResult)> callback);
+    
+    McpToolRouter* toolRouter() const { return m_toolRouter; }
+    McpPromptRouter* promptRouter() const { return m_promptRouter; }
+    McpResourceRouter* resourceRouter() const { return m_resourceRouter; }
+
+    // ================= 4. Diagnostics =================
+    QString getDiagnosticReport() const;
+    McpDiagnosticReporter* reporter() const { return m_reporter; }
+
+signals:
+    void hostReady(bool success, const QString& summaryMsg);
+    void serverStateChanged(const QString& serverName, mcp_qt::McpServerState state);
+    void globalToolsChanged();
+    void globalPromptsChanged();
+    void globalResourcesChanged();
+    void errorOccurred(const QString& serverName, const mcp_qt::McpError& error);
+
+private:
+    void handleAllToolsReady();
+    void handleStartupTimeout();
+    void checkReadyCondition();
+    void finishStartup(bool success, const QString& summaryMsg);
+    bool loadConfigs(const QList<McpServerConfig>& configs);
+
+    McpServerManager* m_manager;
+    McpToolRouter* m_toolRouter;
+    McpPromptRouter* m_promptRouter;
+    McpResourceRouter* m_resourceRouter;
+    McpDiagnosticReporter* m_reporter;
+
+    QTimer* m_watchdogTimer;
+    bool m_isStarting{false};
+    
+    QMap<QString, bool> m_enabledServers;
+    QList<McpServerConfig> m_loadedConfigs;
+};
+
+} // namespace mcp_qt

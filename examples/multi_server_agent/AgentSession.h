@@ -1,10 +1,8 @@
 #pragma once
 
-#include "examples/multi_server_agent/DiagnosticReporter.h"
 #include "ILlmBackend.h"
 #include "LlmAgentExecutor.h"
-#include "mcp_qt_client/McpServerManager.h"
-#include "mcp_qt_client/McpToolRouter.h"
+#include "mcp_qt_client/McpHost.h"
 
 #include <QObject>
 #include <QJsonObject>
@@ -27,9 +25,8 @@ class AgentSession : public QObject {
     Q_OBJECT
 
 public:
-    AgentSession(mcp_qt::McpServerManager* manager,
+    AgentSession(mcp_qt::McpHost* host,
                  std::shared_ptr<mcp_agent::ILlmBackend> llmBackend,
-                 DiagnosticReporter* reporter,
                  QObject* parent = nullptr);
 
     void start(const AgentRunOptions& options);
@@ -41,13 +38,11 @@ signals:
 
 private:
     void runTask(const QString& task);
-    void finishWithError(const QString& stage, const QString& message, const QString& suggestion);
+    void finishWithError(const QString& stage, const QString& message, const QString& suggestion = QString());
     void finishSuccessfully(const QString& message);
 
-    mcp_qt::McpServerManager* m_manager{nullptr};
+    mcp_qt::McpHost* m_host{nullptr};
     std::shared_ptr<mcp_agent::ILlmBackend> m_llmBackend;
-    DiagnosticReporter* m_reporter{nullptr};
-    mcp_qt::McpToolRouter m_router;
 
     mcp_agent::LlmAgentExecutor* m_executor{nullptr};
 

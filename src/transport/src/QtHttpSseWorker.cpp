@@ -148,8 +148,23 @@ void QtHttpSseWorker::openSse() {
                 openSse();
                 return;
             }
+            
+            // If auth retries exhausted or no handler, fail the connection
+            m_stopping = true;
+            QString errMsg = QString("HTTP %1: Authentication failed").arg(statusCode);
+            emit transportError(errMsg);
+            if (m_sseReply) m_sseReply->abort();
+            return;
         }
         
+        if (statusCode >= 400) {
+            m_stopping = true;
+            QString errMsg = QString("HTTP %1: Connection failed").arg(statusCode);
+            emit transportError(errMsg);
+            if (m_sseReply) m_sseReply->abort();
+            return;
+        }
+
         m_authRetryCount = 0;
         const auto sessionHeader = m_sseReply->rawHeader("MCP-Session-Id");
         if (!sessionHeader.isEmpty()) {

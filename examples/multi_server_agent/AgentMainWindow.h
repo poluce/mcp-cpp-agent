@@ -9,8 +9,7 @@
 #include <QLabel>
 #include <memory>
 #include "AgentSession.h"
-#include "mcp_qt_client/McpServerManager.h"
-#include "examples/multi_server_agent/DiagnosticReporter.h"
+#include "mcp_qt_client/McpHost.h"
 
 namespace mcp_agent {
 
@@ -58,9 +57,8 @@ private:
     QPushButton* m_resetSessionBtn{nullptr}; // 🌟 新增：重置/新建对话按钮
 
     // 运行时成员
-    mcp_qt::McpServerManager* m_manager{nullptr};
+    mcp_qt::McpHost* m_host{nullptr};
     std::shared_ptr<ILlmBackend> m_llmBackend;
-    DiagnosticReporter* m_reporter{nullptr};
     AgentSession* m_session{nullptr};
     QNetworkAccessManager* m_network{nullptr};
 

@@ -4,7 +4,6 @@ find_package(Qt6 REQUIRED COMPONENTS Widgets)
 
 add_library(multi_server_agent_core STATIC
     AgentSession.cpp
-    DiagnosticReporter.cpp
     LlmAgentExecutor.cpp
     LlmBackends.cpp
     AgentMainWindow.cpp

@@ -43,9 +43,8 @@ int main(int argc, char *argv[]) {
     }
     
     // 【关键】现在我们可以在初始化完成前，就能监听到 npx 传来的进度和日志了
-    QObject::connect(client.get(), &McpQtClient::errorOccurred, [](const QString& message) {
-        // npx 的标准错误通常包含下载进度或纯日志
-        qDebug().noquote() << "[NPX Log/Progress] =>" << message.trimmed();
+    QObject::connect(client.get(), &McpQtClient::errorOccurred, &app, [](const McpError& error) {
+        qWarning().noquote() << "[PlaywrightClient] Error:" << error.message;
     });
 
     // 绑定连接成功事件
