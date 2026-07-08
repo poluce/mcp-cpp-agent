@@ -87,15 +87,66 @@ cmake --build build
 
 ## 项目结构
 
-```
+```text
 mcp-cpp-agent/
  ├── src/
  │    ├── core/                       # SDK 核心（纯 C++17，负责协议、会话管理和 PKCE 加密）
  │    ├── transport/                  # Qt 原生传输层（QNAM 原生 SSE + QProcess Stdio，零 curl 依赖）
  │    └── client/                     # Qt 高层客户端（信号/槽，支持自动状态恢复自愈）
- ├── conformance_runner_qt/          # 官方合规测试套件客户端（Qt 版，26 场景全通）
- └── tests_qt/                       # Qt 单元测试套件
+ ├── conformance_runner_qt/          # 官方协议合规黑盒测试套件（26 场景全通）
+ ├── test/                           # Qt 单元组件测试套件（白盒回归测试）
+ └── examples/                       # 端到端实战演示
+      └── multi_server_agent/        # 终极多 MCP 服务器聚合 Agent 示例（支持 Python/Node 混编热插拔）
 ```
+
+> **💡 关于实战验证**：
+> 如果想了解如何在真实的高并发 GUI 场景中挂载多语言 MCP 服务器，请直接查看 [multi_server_agent 示例](./examples/multi_server_agent/README.md)。
+
+---
+
+## 🧪 测试与验证体系 (Testing & Validation)
+
+为了将 `mcp-cpp-agent` 打造为一个企业级的稳健基座，本项目构建了一个从底层代码逻辑到顶层应用实践的 **“三维立体测试矩阵”**。
+
+这三个维度分别对应根目录下的三个文件夹：`test`、`conformance_runner_qt` 以及 `examples`。如果你是第一次接手或参与贡献本项目，请务必了解它们各自的职责。
+
+### 1. `test`：组件级单元测试 (Unit & Integration Tests)
+**“内部零件是不是好的？”**
+- **定位**：面向 SDK **开发者** 的白盒/灰盒测试。
+- **框架**：基于 `QtTest` 框架构建。
+- **核心职责**：
+  专注于验证 SDK 内部的齿轮运转是否正常。例如：
+  - JSON-RPC 请求与响应报文的拼接与解析逻辑是否准确无误？
+  - `McpJsonConfigLoader` 解析复杂配置文件时能否正确抽取环境变量？
+  - `QtProcessStdioTransport` 对于环境变量代理、正则表达式匹配的内部机制是否稳健？
+- **触发时机**：每次提交代码或修改底层逻辑时，必须跑通此测试，防止回归 Bug。
+
+### 2. `conformance_runner_qt`：协议一致性黑盒测试 (Protocol Conformance)
+**“说的话别人听得懂吗？”**
+- **定位**：面向 **MCP 官方协议标准** 的黑盒测试。
+- **框架**：基于外部标准 MCP 服务器或官方 Conformance Test Suite。
+- **核心职责**：
+  无论 SDK 内部是怎么写的，此测试只在乎 **SDK 发出去的报文和收到的报文是否 100% 遵守 MCP 官方定义的协议标准**。
+  - 测试 SDK 的生命周期状态（`Initialize` -> `Initialized` -> `Ping`）。
+  - 测试能力协商（Client Capabilities vs Server Capabilities）。
+  - 测试不同类型的通信包体（Tools、Prompts、Resources）是否符合 JSON Schema。
+- **价值**：保证我们的 SDK 能够与全网生态（任何语言编写的客户端或服务器）完美互通。
+
+### 3. `examples`：端到端业务与集成实战 (End-to-End Examples)
+**“造出来的车究竟好不好开？”**
+- **定位**：面向 **最终应用开发者 (DX - Developer Experience)** 的实战集成演示。
+- **代表作**：`examples/multi_server_agent`
+- **核心职责**：
+  将最真实、最极限的环境融合在一起进行测试。
+  - **真实网络与多语言混编**：在此目录下，你会看到 C++ 客户端同时拉起并调用基于 Node.js (`npx`) 和 Python (`uvx`/`python`) 编写的外部服务（如 `fetch`, `playwright`, `memory`）。
+  - **多协议并发**：验证 `Stdio`（本地进程）与 `SSE`（服务器事件流）双协议混合挂载。
+  - **UI 与多线程压测**：测试 Qt GUI 主线程、网络工作线程在极高并发操作下（如疯狂点击“重载”按钮进行热插拔）是否会发生死锁（Deadlock）或崩溃（Segfault）。
+  - **Agent 调度闭环**：验证几十个工具一并抛给大模型（LLM）时，ReAct Agent 调度逻辑的稳健性。
+
+**💡 测试体系总结**：
+- 修改了底层逻辑，先看 `test` 能不能通过。
+- 升级了 MCP 协议版本，去 `conformance_runner_qt` 跑一遍对齐标准。
+- 想要评估新功能好不好用、有没有死锁风险，直接在 `examples/multi_server_agent` 里狂飙测试。
 
 ---
 
