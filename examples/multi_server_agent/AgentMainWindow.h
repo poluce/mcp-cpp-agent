@@ -28,6 +28,7 @@ private slots:
     void handleSessionFinished(int exitCode);
     void handleFetchModels();
     void handleResetSession();
+    void handleServerDoubleClicked(QListWidgetItem* item);
 
 private:
     void initUi();
@@ -39,6 +40,7 @@ private:
     // 控件定义
     QLineEdit* m_configPathEdit{nullptr};
     QPushButton* m_browseBtn{nullptr};
+    QPushButton* m_refreshBtn{nullptr};
     QLineEdit* m_logPathEdit{nullptr};
     QPushButton* m_logBrowseBtn{nullptr};
     

@@ -8,13 +8,15 @@
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QFileInfo>
-#include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QCoreApplication>
 #include <QScrollBar>
 #include <QNetworkRequest>
 #include <QNetworkReply>
+#include <QProgressDialog>
+#include <QDialog>
+#include <QVBoxLayout>
 #include <iostream>
 
 #include <mutex>
@@ -79,6 +81,8 @@ AgentMainWindow::AgentMainWindow(QWidget* parent)
     : QMainWindow(parent) 
 {
     m_network = new QNetworkAccessManager(this);
+    m_host = new mcp_qt::McpHost(this); // 🌟 初始化全局单例 m_host
+    
     initUi();
     applyTheme();
 
@@ -104,6 +108,27 @@ AgentMainWindow::AgentMainWindow(QWidget* parent)
     if (!g_logFilePath.isEmpty()) {
         m_logPathEdit->setText(QDir::toNativeSeparators(g_logFilePath));
     }
+
+    // 🌟 在构造函数里绑定所有 m_host 相关的长期信号，防止重复连接
+    connect(m_host, &mcp_qt::McpHost::serverStateChanged, this, [this]() {
+        updateServerList();
+    });
+
+    connect(m_host, &mcp_qt::McpHost::hostReady, this, [this](bool success, const QString& msg) {
+        if (!m_isRunning && !m_sessionActive) {
+            m_runBtn->setEnabled(true);
+            m_runBtn->setText(QStringLiteral("⚡ 启动 Agent 任务"));
+        }
+        if (!success) {
+            appendLogHtml(QString("<div style='color:red;'>%1</div>").arg(msg.toHtmlEscaped()));
+        } else {
+            m_serverLogConsole->append(m_host->getDiagnosticReport());
+        }
+    });
+
+    connect(m_host, &mcp_qt::McpHost::errorOccurred, this, [this](const QString& name, const mcp_qt::McpError& err) {
+        appendLogHtml(QString("<div style='color:red;'>[Error] %1: %2</div>").arg(name, err.message));
+    });
 }
 
 void AgentMainWindow::initUi() {
@@ -124,9 +149,11 @@ void AgentMainWindow::initUi() {
     m_configPathEdit = new QLineEdit(this);
     m_configPathEdit->setPlaceholderText(QStringLiteral("请输入或选择 MCP 配置文件 examples_config.json 的路径..."));
     m_browseBtn = new QPushButton(QStringLiteral("浏览文件"), this);
+    m_refreshBtn = new QPushButton(QStringLiteral("刷新/重载"), this);
     configLayout->addWidget(cfgLabel);
     configLayout->addWidget(m_configPathEdit);
     configLayout->addWidget(m_browseBtn);
+    configLayout->addWidget(m_refreshBtn);
     mainLayout->addLayout(configLayout);
 
     // 新增：日志文件输出指定
@@ -271,12 +298,21 @@ void AgentMainWindow::initUi() {
     // 信号与槽的联结
     // ==========================================
     connect(m_browseBtn, &QPushButton::clicked, this, &AgentMainWindow::handleBrowseConfig);
+    connect(m_refreshBtn, &QPushButton::clicked, this, [this]() {
+        QString path = m_configPathEdit->text().trimmed();
+        if (!path.isEmpty()) {
+            loadAndConnectServers(path);
+        }
+    });
     connect(m_logBrowseBtn, &QPushButton::clicked, this, &AgentMainWindow::handleBrowseLogFile);
     connect(m_modeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &AgentMainWindow::handleModeChanged);
     connect(m_runBtn, &QPushButton::clicked, this, &AgentMainWindow::handleRunTask);
     connect(m_taskInputEdit, &QLineEdit::returnPressed, this, &AgentMainWindow::handleRunTask);
     connect(m_fetchModelsBtn, &QPushButton::clicked, this, &AgentMainWindow::handleFetchModels);
     connect(m_resetSessionBtn, &QPushButton::clicked, this, &AgentMainWindow::handleResetSession);
+
+    connect(m_modelCombo, &QComboBox::currentTextChanged, this, [this](){}); // To fix any warnings if needed, but the important is below
+    connect(m_serverListWidget, &QListWidget::itemDoubleClicked, this, &AgentMainWindow::handleServerDoubleClicked);
 
     // 🌟 默认选中“在线 OpenAI 兼容 API”模式，开启全部配置框输入权限
     m_modeCombo->setCurrentIndex(1);
@@ -516,6 +552,7 @@ void AgentMainWindow::updateServerList() {
         }
 
         auto* item = new QListWidgetItem(label);
+        item->setData(Qt::UserRole, name);
         item->setForeground(QBrush(ready ? QColor("#28a745") : QColor("#dc3545")));
         m_serverListWidget->addItem(item);
     }
@@ -746,38 +783,117 @@ void AgentMainWindow::appendLogHtml(const QString& html) {
 }
 
 void AgentMainWindow::loadAndConnectServers(const QString& configPath) {
-    if (m_host) {
-        m_host->deleteLater();
-    }
-    m_host = new mcp_qt::McpHost(this);
+    if (!m_host) return;
+
+    appendLogHtml("<b>[System]</b> 尝试加载 MCP 配置: " + configPath);
+    
     m_serverListWidget->clear();
-    m_serverLogConsole->clear();
-
-    connect(m_host, &mcp_qt::McpHost::serverStateChanged, this, [this]() {
-        updateServerList();
-    });
-
-    connect(m_host, &mcp_qt::McpHost::hostReady, this, [this](bool success, const QString& msg) {
-        if (!m_isRunning && !m_sessionActive) {
-            m_runBtn->setEnabled(true);
-            m_runBtn->setText(QStringLiteral("⚡ 启动 Agent 任务"));
-        }
-        if (!success) {
-            appendLogHtml(QString("<div style='color:red;'>%1</div>").arg(msg.toHtmlEscaped()));
-            m_serverLogConsole->append(m_host->getDiagnosticReport());
-        }
-    });
-
-    connect(m_host, &mcp_qt::McpHost::errorOccurred, this, [this](const QString& name, const mcp_qt::McpError& err) {
-        m_serverLogConsole->append(QString("[%1] %2").arg(name, err.message));
-    });
-
-    appendLogHtml(QStringLiteral("<div style='color: #6c757d;'>正在加载配置文件并启动 MCP 服务端进程...</div>"));
+    m_host->stop();
+    m_host->clearConfig();
     
     if (!m_host->loadConfigFromFile(configPath)) {
         appendLogHtml(QStringLiteral("<div style='color: red;'>加载配置文件失败！</div>"));
     } else {
         m_host->start(30000);
+    }
+}
+
+void AgentMainWindow::handleServerDoubleClicked(QListWidgetItem* item) {
+    if (!item || !m_host) return;
+    QString serverName = item->data(Qt::UserRole).toString();
+    auto c = m_host->client(serverName);
+    if (!c) return;
+
+    QString info = QString("MCP 服务端详细信息: %1\n\n").arg(serverName);
+
+    if (m_host->serverState(serverName) != mcp_qt::McpServerState::Ready) {
+        info += "当前状态: " + m_host->serverErrorMessage(serverName) + "\n";
+        QMessageBox::information(this, QStringLiteral("MCP 服务端信息"), info);
+        return;
+    }
+
+    info += QString("服务器能力 (Capabilities):\n");
+    info += QString("- 提示词 (Prompts): %1\n").arg(c->hasPromptsCapability() ? "支持" : "不支持");
+    info += QString("- 资源读取 (Resources): %1\n").arg(c->hasResourcesCapability() ? "支持" : "不支持");
+    
+    const auto& tools = c->cachedTools();
+    info += QString("- 包含工具 (Tools): %1 个\n").arg(tools.size());
+
+    if (!tools.empty()) {
+        info += QString("\n================ 工具列表 (Tools) ================\n");
+        for (const auto& t : tools) {
+            info += QString("🔧 工具名称: %1\n").arg(t.name);
+            if (!t.description.isEmpty()) {
+                QString desc = t.description;
+                desc.replace("\n", "\n   ");
+                info += QString("   描述: %1\n").arg(desc);
+            }
+            QJsonDocument doc(t.inputSchema);
+            QString schemaStr = doc.toJson(QJsonDocument::Compact);
+            if (schemaStr != "{}" && !schemaStr.isEmpty()) {
+                info += QString("   参数声明: %1\n").arg(schemaStr);
+            } else {
+                info += QString("   参数声明: 无参数\n");
+            }
+            info += "\n";
+        }
+    }
+
+    auto showInfoDialog = [this, serverName](const QString& text) {
+        QDialog* dialog = new QDialog(this);
+        dialog->setWindowTitle(QString("MCP 服务端详细信息: %1").arg(serverName));
+        dialog->resize(700, 500);
+        QVBoxLayout* layout = new QVBoxLayout(dialog);
+        QTextEdit* textEdit = new QTextEdit(dialog);
+        textEdit->setReadOnly(true);
+        textEdit->setPlainText(text);
+        
+        QFont font("Consolas", 10);
+        font.setStyleHint(QFont::Monospace);
+        textEdit->setFont(font);
+
+        layout->addWidget(textEdit);
+        dialog->setLayout(layout);
+        dialog->exec();
+        dialog->deleteLater();
+    };
+
+    if (c->hasPromptsCapability()) {
+        QProgressDialog* progress = new QProgressDialog(QStringLiteral("正在加载详细提示词列表..."), QStringLiteral("取消"), 0, 0, this);
+        progress->setWindowModality(Qt::WindowModal);
+        progress->show();
+
+        c->listPromptsAsync("", [showInfoDialog, progress, info, serverName](const QJsonObject& result, const QString& next, const QString& err) {
+            progress->deleteLater();
+            QString finalInfo = info;
+            if (!err.isEmpty()) {
+                finalInfo += QString("\n获取 Prompts 失败: %1").arg(err);
+            } else {
+                QJsonArray promptsArray = result.value("prompts").toArray();
+                finalInfo += QString("\n================ 提示词 (Prompts) 共 %1 个 ================\n").arg(promptsArray.size());
+                for (int i=0; i<promptsArray.size(); ++i) {
+                    QJsonObject p = promptsArray[i].toObject();
+                    QString name = p.value("name").toString();
+                    QString desc = p.value("description").toString();
+                    finalInfo += QString("💡 【%1】\n   描述: %2\n").arg(name, desc.isEmpty() ? "暂无描述" : desc);
+                    
+                    QJsonArray argsArray = p.value("arguments").toArray();
+                    if (!argsArray.isEmpty()) {
+                        finalInfo += "   参数:\n";
+                        for (int j=0; j<argsArray.size(); ++j) {
+                            QJsonObject arg = argsArray[j].toObject();
+                            QString argName = arg.value("name").toString();
+                            bool req = arg.value("required").toBool(false);
+                            finalInfo += QString("     - %1 %2\n").arg(argName, req ? "(必填)" : "(可选)");
+                        }
+                    }
+                    finalInfo += "\n";
+                }
+            }
+            showInfoDialog(finalInfo);
+        });
+    } else {
+        showInfoDialog(info);
     }
 }
 

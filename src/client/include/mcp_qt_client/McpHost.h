@@ -22,11 +22,17 @@ public:
     // ================= 1. Configuration & Lifecycle =================
     bool loadConfigFromFile(const QString& configFilePath);
     bool loadConfigFromJson(const QJsonObject& jsonObj);
+    void clearConfig();
     void addServerConfig(const McpServerConfig& config);
     
     // Starts enabled servers asynchronously. Emits hostReady when done or timeout occurs.
     void start(int timeoutMs = 30000); 
     void stop();
+    
+    // 一键重启已加载的所有服务
+    void restart(int timeoutMs = 30000);
+    // 热重载配置文件并重新拉起服务
+    bool reloadConfigAndRestart(int timeoutMs = 30000);
 
     // ================= 2. Server Management =================
     QStringList serverNames() const;
@@ -36,6 +42,7 @@ public:
     McpServerState serverState(const QString& serverName) const;
     QString serverErrorMessage(const QString& serverName) const;
     int serverToolCount(const QString& serverName) const;
+    std::shared_ptr<McpQtClient> client(const QString& serverName) const;
 
     // ================= 3. Unified Routing =================
     QJsonArray exportAllToolsToLlm(McpQtClient::LlmFormat format = McpQtClient::LlmFormat::OpenAI) const;
@@ -74,6 +81,7 @@ private:
     QTimer* m_watchdogTimer;
     bool m_isStarting{false};
     
+    QString m_lastConfigPath;
     QMap<QString, bool> m_enabledServers;
     QList<McpServerConfig> m_loadedConfigs;
 };

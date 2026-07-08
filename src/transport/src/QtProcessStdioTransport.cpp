@@ -105,6 +105,7 @@ bool QtProcessStdioTransport::start() {
 
 void QtProcessStdioTransport::close() {
     std::function<void()> closeCb;
+    QProcess* p = nullptr;
     {
         std::lock_guard<std::mutex> lock(m_mutex);
 #ifdef _WIN32
@@ -116,14 +117,16 @@ void QtProcessStdioTransport::close() {
         if (!m_started) return;
         m_started = false;
         
-        if (m_process->state() != QProcess::NotRunning) {
-            m_process->terminate();
-            if (!m_process->waitForFinished(500)) {
-                m_process->kill();
-                m_process->waitForFinished(500);
-            }
-        }
+        p = m_process;
         closeCb = m_onClose;
+    }
+    
+    if (p && p->state() != QProcess::NotRunning) {
+        p->terminate();
+        if (!p->waitForFinished(500)) {
+            p->kill();
+            p->waitForFinished(500);
+        }
     }
     
     if (closeCb) {

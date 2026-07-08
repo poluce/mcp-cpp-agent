@@ -16,7 +16,8 @@ rl.on('line', (line) => {
         result: {
           protocolVersion: "2025-11-25",
           capabilities: {
-            tools: {}
+            tools: {},
+            prompts: {}
           },
           serverInfo: {
             name: "mock-search-server",
@@ -40,6 +41,51 @@ rl.on('line', (line) => {
                   query: { type: "string", description: "搜索关键词" }
                 },
                 required: ["query"]
+              }
+            }
+          ]
+        }
+      };
+      console.log(JSON.stringify(response));
+    } else if (request.method === 'prompts/list') {
+      const response = {
+        jsonrpc: "2.0",
+        id: request.id,
+        result: {
+          prompts: [
+            {
+              name: "code_review",
+              description: "用于执行代码审查的标准提示词模板",
+              arguments: [
+                {
+                  name: "language",
+                  description: "编程语言",
+                  required: true
+                }
+              ]
+            },
+            {
+              name: "unit_test_gen",
+              description: "用于生成单元测试的提示词模板",
+              arguments: []
+            }
+          ]
+        }
+      };
+      console.log(JSON.stringify(response));
+    } else if (request.method === 'prompts/get') {
+      const promptName = request.params.name;
+      const response = {
+        jsonrpc: "2.0",
+        id: request.id,
+        result: {
+          description: "提示词内容",
+          messages: [
+            {
+              role: "user",
+              content: {
+                type: "text",
+                text: `执行提示词模板：${promptName}`
               }
             }
           ]

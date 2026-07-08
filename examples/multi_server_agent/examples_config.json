@@ -8,6 +8,43 @@
             "type": "sse",
             "url": "https://api.anysearch.com/mcp"
         },
+        "context7": {
+            "args": [
+                "-y",
+                "@upstash/context7-mcp"
+            ],
+            "command": "npx.cmd"
+        },
+        "everything": {
+            "args": [
+                "-y",
+                "@modelcontextprotocol/server-everything"
+            ],
+            "command": "npx.cmd"
+        },
+        "fetch": {
+            "args": [
+                "-m",
+                "mcp_server_fetch",
+                "--ignore-robots-txt"
+            ],
+            "command": "python"
+        },
+        "filesystem": {
+            "args": [
+                "-y",
+                "@modelcontextprotocol/server-filesystem",
+                "F:/B_My_Document/GitHub/mcp-cpp-agent"
+            ],
+            "command": "npx.cmd"
+        },
+        "memory": {
+            "args": [
+                "-y",
+                "@modelcontextprotocol/server-memory"
+            ],
+            "command": "npx.cmd"
+        },
         "mock-search-server": {
             "args": [
                 "F:/B_My_Document/GitHub/mcp-cpp-agent/examples/multi_server_agent/mock_search_server.js"

@@ -61,6 +61,7 @@ McpHost::~McpHost() {
 bool McpHost::loadConfigFromFile(const QString& configFilePath) {
     try {
         auto loader = McpJsonConfigLoader::fromFile(configFilePath);
+        m_lastConfigPath = configFilePath; // 🌟 记录路径供热重载使用
         return loadConfigs(loader.load());
     } catch (const std::exception& e) {
         m_reporter->addError("Config", QString("Failed to load config file: %1").arg(e.what()));
@@ -88,6 +89,11 @@ bool McpHost::loadConfigs(const QList<McpServerConfig>& configs) {
 void McpHost::addServerConfig(const McpServerConfig& config) {
     m_loadedConfigs.append(config);
     m_enabledServers.insert(config.serverName, true);
+}
+
+void McpHost::clearConfig() {
+    m_loadedConfigs.clear();
+    m_enabledServers.clear();
 }
 
 void McpHost::start(int timeoutMs) {
@@ -126,6 +132,25 @@ void McpHost::stop() {
     m_manager->closeAll();
 }
 
+void McpHost::restart(int timeoutMs) {
+    stop();
+    start(timeoutMs);
+}
+
+bool McpHost::reloadConfigAndRestart(int timeoutMs) {
+    if (m_lastConfigPath.isEmpty()) {
+        m_reporter->addError("Restart", "No configuration file to reload.");
+        return false;
+    }
+    stop();
+    clearConfig();
+    bool ok = loadConfigFromFile(m_lastConfigPath);
+    if (ok) {
+        start(timeoutMs);
+    }
+    return ok;
+}
+
 QStringList McpHost::serverNames() const {
     QStringList names;
     for (const auto& cfg : m_loadedConfigs) {
@@ -155,6 +180,10 @@ int McpHost::serverToolCount(const QString& serverName) const {
     auto c = m_manager->client(serverName);
     if (!c) return 0;
     return static_cast<int>(c->cachedTools().size());
+}
+
+std::shared_ptr<McpQtClient> McpHost::client(const QString& serverName) const {
+    return m_manager->client(serverName);
 }
 
 McpServerState McpHost::serverState(const QString& serverName) const {
