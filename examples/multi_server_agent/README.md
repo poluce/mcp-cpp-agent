@@ -1,6 +1,6 @@
 # Multi-Server Agent Example
 
-这是一个基于 `mcp-cpp-agent` SDK 构建的高阶桌面级图形界面（GUI）示例应用。它完美展示了如何在一个 C++ 应用程序中**同时管理、挂载并调用多个跨语言的 MCP（Model Context Protocol）服务器**。
+这是一个基于 `mcp-qt` SDK 构建的高阶桌面级图形界面（GUI）示例应用。它完美展示了如何在一个 C++ 应用程序中**同时管理、挂载并调用多个跨语言的 MCP（Model Context Protocol）服务器**。
 
 ## ✨ 核心特性
 

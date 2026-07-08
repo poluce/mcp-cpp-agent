@@ -1,12 +1,12 @@
 ---
-name: mcp-cpp-agent-contributor
-description: 专门用于指导 AI 代理或新开发者为基于 Qt6 的 MCP C++ SDK (mcp-cpp-agent) 贡献代码、修复 Bug 或提交 PR 的标准操作程序 (SOP)。
+name: mcp-qt-contributor
+description: 专门用于指导 AI 代理或新开发者为基于 Qt6 的 MCP C++ SDK (mcp-qt) 贡献代码、修复 Bug 或提交 PR 的标准操作程序 (SOP)。
 ---
 
 # MCP C++ Agent Contributor Skill
 
 ## 1. 触发条件 (When to use this skill)
-当用户要求“给 mcp-cpp-agent 加个功能”、“修复 SDK 的 Bug”、“重构底层传输协议”或“准备提交 PR”时，**必须强制激活本技能**并严格遵守以下所有规约。
+当用户要求“给 mcp-qt 加个功能”、“修复 SDK 的 Bug”、“重构底层传输协议”或“准备提交 PR”时，**必须强制激活本技能**并严格遵守以下所有规约。
 
 ## 2. 核心架构认知 (Architecture Mindset)
 在修改任何代码前，你必须理解以下架构边界：

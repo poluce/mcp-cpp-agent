@@ -1,4 +1,4 @@
-# mcp-cpp-agent
+# mcp-qt
 
 基于 Qt6 纯净实现的 **Model Context Protocol (MCP) 客户端 SDK**。
 
@@ -88,7 +88,7 @@ cmake --build build
 ## 项目结构
 
 ```text
-mcp-cpp-agent/
+mcp-qt/
  ├── src/
  │    ├── core/                       # SDK 核心（纯 C++17，负责协议、会话管理和 PKCE 加密）
  │    ├── transport/                  # Qt 原生传输层（QNAM 原生 SSE + QProcess Stdio，零 curl 依赖）
@@ -106,7 +106,7 @@ mcp-cpp-agent/
 
 ## 🧪 测试与验证体系 (Testing & Validation)
 
-为了将 `mcp-cpp-agent` 打造为一个企业级的稳健基座，本项目构建了一个从底层代码逻辑到顶层应用实践的 **“三维立体测试矩阵”**。
+为了将 `mcp-qt` 打造为一个企业级的稳健基座，本项目构建了一个从底层代码逻辑到顶层应用实践的 **“三维立体测试矩阵”**。
 
 这三个维度分别对应根目录下的三个文件夹：`test`、`conformance_runner_qt` 以及 `examples`。如果你是第一次接手或参与贡献本项目，请务必了解它们各自的职责。
 
