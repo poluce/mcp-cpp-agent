@@ -4,6 +4,8 @@
 
 整个 SDK 基于 **Qt6 (Core/Network)** 原生架构进行响应式设计，零外部第三方网络库（如 libcurl、httplib 等）物理依赖，完美通过官方 conformance 完整测试套件验证。
 
+📖 **使用手册请查阅 [API 参考手册 (docs/API_REFERENCE.md)](docs/API_REFERENCE.md)**
+
 ---
 
 ## 官方合规
