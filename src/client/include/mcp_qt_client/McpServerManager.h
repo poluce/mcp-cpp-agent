@@ -8,8 +8,16 @@
 #include <atomic>
 #include <memory>
 #include <mcp_qt_client/McpQtClient.h>
+#include <mcp_qt_client/IMcpConfigLoader.h>
 
 namespace mcp_qt {
+
+enum class McpServerState {
+    Pending,
+    Connecting,
+    Ready,
+    Error
+};
 
 /**
  * @brief 多服务器生命周期管理器 (McpServerManager)
@@ -27,8 +35,8 @@ public:
     explicit McpServerManager(QObject* parent = nullptr);
     ~McpServerManager() override;
 
-    bool loadConfig(const QJsonObject& configObject);
-    bool loadConfigFile(const QString& filePath);
+    bool loadServers(std::shared_ptr<IMcpConfigLoader> loader);
+    bool loadServers(const QList<McpServerConfig>& configs);
 
     void registerClient(const QString& serverName, std::shared_ptr<McpQtClient> client);
     void unregisterClient(const QString& serverName);
@@ -52,9 +60,10 @@ public:
 signals:
     void clientConnected(const QString& serverName);
     void clientDisconnected(const QString& serverName);
-    void clientErrorOccurred(const QString& serverName, const QString& error);
+    void clientErrorOccurred(const QString& serverName, const mcp_qt::McpError& error);
     void clientToolsChanged(const QString& serverName, const std::vector<mcp_qt::McpQtTool>& newTools);
     void clientPromptsChanged(const QString& serverName);
+    void clientStateChanged(const QString& serverName, mcp_qt::McpServerState state);
 
     /// 某个服务器的工具预热完成（首次连接后的 fetchAllToolsAsync 完成）
     void clientToolsReady(const QString& serverName, int toolCount);
@@ -62,10 +71,12 @@ signals:
     void allToolsReady();
 
 private:
+    void processHttpServerConfig(const McpServerConfig& cfg);
     void setupClientSignals(const QString& serverName, const std::shared_ptr<McpQtClient>& client);
+    void updateServerState(const QString& serverName, McpServerState state);
 
     QHash<QString, std::shared_ptr<McpQtClient>> m_clients;
-    std::atomic<int> m_pendingFetchCount{0};
+    QHash<QString, McpServerState> m_serverStates;
     QTimer* m_heartbeatTimer{nullptr};
 };
 

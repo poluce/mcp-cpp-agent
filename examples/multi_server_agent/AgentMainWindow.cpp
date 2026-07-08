@@ -1,6 +1,7 @@
 #include "AgentMainWindow.h"
 #include "LlmBackends.h"
 
+#include <mcp_qt_client/McpJsonConfigLoader.h>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGridLayout>
@@ -774,13 +775,14 @@ void AgentMainWindow::loadAndConnectServers(const QString& configPath) {
     connect(m_manager, &mcp_qt::McpServerManager::clientConnected, this, [this](const QString& name) {
         auto client = m_manager->client(name);
         if (!client) return;
-        connect(client.get(), &mcp_qt::McpQtClient::errorOccurred, this, [this, name](const QString& msg) {
-            m_serverLogConsole->append(QString("[%1] %2").arg(name, msg));
+        connect(client.get(), &mcp_qt::McpQtClient::errorOccurred, this, [this, name](const mcp_qt::McpError& err) {
+            m_serverLogConsole->append(QString("[%1] %2").arg(name, err.message));
         });
     });
 
     appendLogHtml(QStringLiteral("<div style='color: #6c757d;'>正在加载配置文件并启动 MCP 服务端进程...</div>"));
-    if (!m_manager->loadConfigFile(configPath)) {
+    auto loader = std::make_shared<mcp_qt::McpJsonConfigLoader>(mcp_qt::McpJsonConfigLoader::fromFile(configPath));
+    if (!m_manager->loadServers(loader)) {
         appendLogHtml(QStringLiteral("<div style='color: red;'>加载配置文件失败！</div>"));
     }
 

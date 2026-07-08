@@ -14,117 +14,35 @@ McpServerManager::~McpServerManager() {
     closeAll(1000);
 }
 
-bool McpServerManager::loadConfigFile(const QString& filePath) {
-    QFile file(filePath);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        qWarning() << "Failed to open config file:" << filePath;
-        return false;
-    }
-    QByteArray data = file.readAll();
-    QJsonParseError parseError;
-    QJsonDocument doc = QJsonDocument::fromJson(data, &parseError);
-    if (doc.isNull()) {
-        qWarning() << "Failed to parse JSON config:" << parseError.errorString();
-        return false;
-    }
-    if (!doc.isObject()) {
-        qWarning() << "Config JSON is not an object";
-        return false;
-    }
-    return loadConfig(doc.object());
+bool McpServerManager::loadServers(std::shared_ptr<IMcpConfigLoader> loader) {
+    if (!loader) return false;
+    return loadServers(loader->load());
 }
 
-bool McpServerManager::loadConfig(const QJsonObject& configObject) {
-    QJsonObject serversObj;
-    if (configObject.contains(QStringLiteral("mcpServers")) && configObject.value(QStringLiteral("mcpServers")).isObject()) {
-        serversObj = configObject.value(QStringLiteral("mcpServers")).toObject();
-    } else {
-        // 如果直接是服务器列表
-        serversObj = configObject;
-    }
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
 
+bool McpServerManager::loadServers(const QList<McpServerConfig>& configs) {
     QSet<QString> loadedServers;
-    for (auto it = serversObj.constBegin(); it != serversObj.constEnd(); ++it) {
-        QString serverName = it.key();
-        if (!it.value().isObject()) continue;
-        QJsonObject serverCfg = it.value().toObject();
 
-        if (serverCfg.value(QStringLiteral("disabled")).toBool(false)) {
-            continue;
-        }
+    for (const auto& cfg : configs) {
+        if (cfg.disabled) continue;
+        loadedServers.insert(cfg.serverName);
 
-        QMap<QString, QString> processEnv;
-
-        // 注意：系统代理已由 QtProcessStdioTransport 自动探测注入，此处仅处理用户自定义 env
-        if (serverCfg.contains(QStringLiteral("env")) && serverCfg.value(QStringLiteral("env")).isObject()) {
-            QJsonObject envs = serverCfg.value(QStringLiteral("env")).toObject();
-            for (auto envIt = envs.constBegin(); envIt != envs.constEnd(); ++envIt) {
-                QString envVal;
-                if (envIt.value().isBool()) {
-                    envVal = envIt.value().toBool() ? QStringLiteral("true") : QStringLiteral("false");
-                } else {
-                    envVal = envIt.value().toVariant().toString();
-                }
-                processEnv.insert(envIt.key(), envVal); // 用户自定义 env 覆盖自动提取的代理
-            }
-        }
-
-        McpQtClientBuilder builder;
-        if (!processEnv.isEmpty()) {
-            builder.setEnvironment(processEnv);
-        }
-
-        QMap<QString, QString> httpHeaders;
-        if (serverCfg.contains(QStringLiteral("headers")) && serverCfg.value(QStringLiteral("headers")).isObject()) {
-            QJsonObject hdrs = serverCfg.value(QStringLiteral("headers")).toObject();
-            for (auto hdrIt = hdrs.constBegin(); hdrIt != hdrs.constEnd(); ++hdrIt) {
-                if (hdrIt.value().isString()) {
-                    httpHeaders.insert(hdrIt.key(), hdrIt.value().toString());
-                }
-            }
-        }
-        if (!httpHeaders.isEmpty()) {
-            builder.setHttpHeaders(httpHeaders);
-        }
-
-        bool hasTransport = false;
-
-        // 2. 根据是 url 还是 command 建立 transport
-        if (serverCfg.contains(QStringLiteral("url"))) {
-            QString url = serverCfg.value(QStringLiteral("url")).toString();
-            QString type = serverCfg.value(QStringLiteral("type")).toString();
-            if (type == QStringLiteral("stateless_http")) {
-                builder.setTransportStatelessHttp(url);
-            } else {
-                builder.setTransportHttp(url);
-            }
-            hasTransport = true;
-        } else if (serverCfg.contains(QStringLiteral("command"))) {
-            QString command = serverCfg.value(QStringLiteral("command")).toString();
-            QStringList args;
-            if (serverCfg.contains(QStringLiteral("args")) && serverCfg.value(QStringLiteral("args")).isArray()) {
-                QJsonArray argsArr = serverCfg.value(QStringLiteral("args")).toArray();
-                for (const auto& argVal : argsArr) {
-                    args.append(argVal.toString());
-                }
-            }
-            builder.setTransportStdio(command, args);
-            hasTransport = true;
-        }
-
-        if (!hasTransport) {
-            qWarning() << "Server config for" << serverName << "does not contain url or command";
-            continue;
-        }
-
-        // 可以设置 Client 名字和重连策略等
-        builder.setClientInfo(serverName, QStringLiteral("1.0.0"));
-        
-        // 3. 构建并异步连接
-        auto clientPtr = builder.buildAndConnectAsync();
-        if (clientPtr) {
-            loadedServers.insert(serverName);
-            registerClient(serverName, clientPtr);
+        if (!cfg.url.isEmpty()) {
+            processHttpServerConfig(cfg);
+        } else if (!cfg.command.isEmpty()) {
+            McpQtClientBuilder builder;
+            if (!cfg.env.isEmpty()) builder.setEnvironment(cfg.env);
+            if (!cfg.headers.isEmpty()) builder.setHttpHeaders(cfg.headers);
+            builder.setTransportStdio(cfg.command, cfg.args);
+            builder.setClientInfo(cfg.serverName, QStringLiteral("1.0.0"));
+            if (!cfg.nameSpace.isEmpty()) builder.setNamespace(cfg.nameSpace);
+            
+            auto clientPtr = builder.buildAndConnectAsync();
+            if (clientPtr) registerClient(cfg.serverName, clientPtr);
+        } else {
+            qWarning() << "Server config for" << cfg.serverName << "does not contain url or command";
         }
     }
 
@@ -138,11 +56,73 @@ bool McpServerManager::loadConfig(const QJsonObject& configObject) {
     return true;
 }
 
+void McpServerManager::processHttpServerConfig(const McpServerConfig& cfg) {
+    QPointer<McpServerManager> safeThis(this);
+    auto buildAndRegister = [safeThis](const McpServerConfig& c) {
+        if (!safeThis) return;
+        McpQtClientBuilder builder;
+        if (!c.env.isEmpty()) builder.setEnvironment(c.env);
+        if (!c.headers.isEmpty()) builder.setHttpHeaders(c.headers);
+        if (c.type == QStringLiteral("stateless_http")) {
+            builder.setTransportStatelessHttp(c.url);
+        } else {
+            builder.setTransportHttp(c.url);
+        }
+        builder.setClientInfo(c.serverName, QStringLiteral("1.0.0"));
+        if (!c.nameSpace.isEmpty()) builder.setNamespace(c.nameSpace);
+        
+        auto clientPtr = builder.buildAndConnectAsync();
+        if (clientPtr) safeThis->registerClient(c.serverName, clientPtr);
+    };
+
+    if (cfg.type == QStringLiteral("stateless_http") || cfg.type == QStringLiteral("http")) {
+        buildAndRegister(cfg);
+    } else {
+        // Auto negotiate via HEAD request
+        m_serverStates.insert(cfg.serverName, McpServerState::Pending);
+        QNetworkAccessManager* nam = new QNetworkAccessManager(this);
+        QNetworkRequest req(QUrl(cfg.url));
+        for (auto it = cfg.headers.constBegin(); it != cfg.headers.constEnd(); ++it) {
+            req.setRawHeader(it.key().toUtf8(), it.value().toUtf8());
+        }
+        QNetworkReply* reply = nam->head(req);
+        connect(reply, &QNetworkReply::finished, this, [safeThis, cfg, reply, nam, buildAndRegister]() {
+            if (!safeThis) {
+                reply->deleteLater();
+                nam->deleteLater();
+                return;
+            }
+            if (reply->error() != QNetworkReply::NoError) {
+                safeThis->updateServerState(cfg.serverName, McpServerState::Error);
+                emit safeThis->clientErrorOccurred(cfg.serverName, mcp_qt::McpError{static_cast<int>(reply->error()), reply->errorString(), QJsonObject{}});
+                if (safeThis->isAllToolsReady()) {
+                    emit safeThis->allToolsReady();
+                }
+                reply->deleteLater();
+                nam->deleteLater();
+                return;
+            }
+            McpServerConfig newCfg = cfg;
+            QString contentType = reply->header(QNetworkRequest::ContentTypeHeader).toString();
+            if (contentType.contains("text/event-stream", Qt::CaseInsensitive)) {
+                newCfg.type = QStringLiteral("http");
+            } else {
+                newCfg.type = QStringLiteral("stateless_http");
+            }
+            reply->deleteLater();
+            nam->deleteLater();
+            buildAndRegister(newCfg);
+        });
+    }
+}
+
+
 void McpServerManager::registerClient(const QString& serverName, std::shared_ptr<McpQtClient> client) {
     if (!client) return;
     unregisterClient(serverName);
 
     m_clients.insert(serverName, client);
+    m_serverStates.insert(serverName, McpServerState::Pending);
     setupClientSignals(serverName, client);
 }
 
@@ -155,6 +135,7 @@ void McpServerManager::unregisterClient(const QString& serverName) {
             client->close();
         }
         m_clients.erase(it);
+        m_serverStates.remove(serverName);
     }
 }
 
@@ -179,32 +160,48 @@ void McpServerManager::closeAll(int timeoutMs) {
     m_clients.clear();
 }
 
+void McpServerManager::updateServerState(const QString& serverName, McpServerState state) {
+    if (m_serverStates.value(serverName) != state) {
+        m_serverStates[serverName] = state;
+        emit clientStateChanged(serverName, state);
+    }
+}
+
 void McpServerManager::setupClientSignals(const QString& serverName, const std::shared_ptr<McpQtClient>& client) {
     connect(client.get(), &McpQtClient::connected, this, [this, serverName, client]() {
+        updateServerState(serverName, McpServerState::Connecting);
         emit clientConnected(serverName);
 
         // 连接即预热：自动拉取全部工具并缓存
         if (client->cachedTools().empty()) {
-            m_pendingFetchCount.fetch_add(1);
             QPointer<McpServerManager> safeThis(this);
             client->fetchAllToolsAsync([safeThis, serverName, weakClient = std::weak_ptr<McpQtClient>(client)](const std::vector<McpQtTool>& tools) {
                 if (!safeThis) return; // Manager 已销毁，安全退出
-                int remaining = safeThis->m_pendingFetchCount.fetch_sub(1) - 1;
                 qInfo().noquote() << "[McpServerManager]" << serverName << "预热完成:" << tools.size() << "个工具";
                 emit safeThis->clientToolsReady(serverName, static_cast<int>(tools.size()));
-                if (remaining <= 0) {
+                safeThis->updateServerState(serverName, McpServerState::Ready);
+                if (safeThis->isAllToolsReady()) {
                     emit safeThis->allToolsReady();
                 }
             });
         } else {
             emit clientToolsReady(serverName, static_cast<int>(client->cachedTools().size()));
+            updateServerState(serverName, McpServerState::Ready);
+            if (isAllToolsReady()) {
+                emit allToolsReady();
+            }
         }
     });
     connect(client.get(), &McpQtClient::disconnected, this, [this, serverName]() {
+        updateServerState(serverName, McpServerState::Pending);
         emit clientDisconnected(serverName);
     });
-    connect(client.get(), &McpQtClient::errorOccurred, this, [this, serverName](const QString& message) {
-        emit clientErrorOccurred(serverName, message);
+    connect(client.get(), &McpQtClient::errorOccurred, this, [this, serverName](const mcp_qt::McpError& error) {
+        updateServerState(serverName, McpServerState::Error);
+        emit clientErrorOccurred(serverName, error);
+        if (isAllToolsReady()) {
+            emit allToolsReady();
+        }
     });
     connect(client.get(), &McpQtClient::toolsChanged, this, [this, serverName](const std::vector<mcp_qt::McpQtTool>& newTools) {
         emit clientToolsChanged(serverName, newTools);
@@ -215,7 +212,13 @@ void McpServerManager::setupClientSignals(const QString& serverName, const std::
 }
 
 bool McpServerManager::isAllToolsReady() const {
-    return m_pendingFetchCount.load() <= 0;
+    if (m_serverStates.isEmpty()) return false;
+    for (auto it = m_serverStates.constBegin(); it != m_serverStates.constEnd(); ++it) {
+        if (it.value() == McpServerState::Pending || it.value() == McpServerState::Connecting) {
+            return false;
+        }
+    }
+    return true;
 }
 
 void McpServerManager::startHeartbeat(int intervalMs) {

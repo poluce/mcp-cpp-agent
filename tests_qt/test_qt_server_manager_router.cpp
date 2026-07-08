@@ -1,10 +1,12 @@
 #include "tests/common.h"
 #include "mcp_qt_client/McpServerManager.h"
 #include "mcp_qt_client/McpToolRouter.h"
+#include "mcp_qt_client/McpJsonConfigLoader.h"
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QCoreApplication>
 #include <string>
+#include <QThread>
 
 void test_qt_server_manager_router() {
     // 1. 测试生命周期管家 McpServerManager
@@ -21,14 +23,20 @@ void test_qt_server_manager_router() {
                 }}
             }},
             {"test-server-b", QJsonObject{
-                {"url", "http://localhost:12345/sse"}
+                {"url", "http://localhost:12345/sse"},
+                {"type", "http"}
             }}
         }}
     };
 
     // 检查环境变量设置与加载逻辑
-    bool loadOk = manager.loadConfig(config);
+    mcp_qt::McpJsonConfigLoader loader(config);
+    bool loadOk = manager.loadServers(loader.load());
     TM_ASSERT_TRUE(loadOk, "McpServerManager config load should succeed");
+
+    QCoreApplication::processEvents();
+    QThread::msleep(100);
+    QCoreApplication::processEvents();
 
     // 验证客户端是否创建成功
     auto clientA = manager.client("test-server-a");

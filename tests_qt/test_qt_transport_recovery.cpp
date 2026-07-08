@@ -213,11 +213,13 @@ void test_qt_transport_recovery() {
         // 注册带和不带 context 的两个通知处理器
         int countWithCtx = 0;
         client->registerNotificationHandler("notifications/custom-ctx", client.get(), [&countWithCtx](const QJsonObject&) {
+            qDebug() << "CUSTOM CTX HANDLER EXECUTED";
             countWithCtx++;
         });
 
         int countNoCtx = 0;
         client->registerNotificationHandler("notifications/custom-no-ctx", [&countNoCtx](const QJsonObject&) {
+            qDebug() << "CUSTOM NO-CTX HANDLER EXECUTED";
             countNoCtx++;
         });
 

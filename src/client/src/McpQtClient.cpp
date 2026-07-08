@@ -305,11 +305,17 @@ McpQtClientBuilder& McpQtClientBuilder::setEnvironment(const QMap<QString, QStri
 McpQtClientBuilder& McpQtClientBuilder::setHttpHeaders(const QMap<QString, QString>& headers) { m_httpHeaders = headers; return *this; }
 McpQtClientBuilder& McpQtClientBuilder::setHttpProxy(const QNetworkProxy& proxy) { m_proxy = proxy; return *this; }
 McpQtClientBuilder& McpQtClientBuilder::setReconnectPolicy(const mcp::McpReconnectPolicy& policy) { m_reconnectPolicy = policy; return *this; }
+McpQtClientBuilder& McpQtClientBuilder::setNamespace(const QString& ns) {
+    m_namespace = ns;
+    return *this;
+}
+
 McpQtClientBuilder& McpQtClientBuilder::setClientInfo(const QString& name, const QString& version) { m_clientName = name; m_clientVersion = version; return *this; }
 McpQtClientBuilder& McpQtClientBuilder::setTimeout(int ms) { m_timeoutMs = ms; return *this; }
 
 std::shared_ptr<McpQtClient> McpQtClientBuilder::buildAndConnectAndWait(QString* errorString) {
     auto c = std::shared_ptr<McpQtClient>(new McpQtClient());
+    c->m_namespace = m_namespace;
     c->m_transportType = m_transportType;
     c->m_url_or_cmd = m_url_or_cmd;
     c->m_args = m_args;
@@ -455,7 +461,7 @@ McpQtClient::Ptr McpQtClient::connectWithOAuthAndWait(const OAuthConfig& oa,cons
 
 bool McpQtClient::connectToTransportAndWait(std::shared_ptr<mcp::IMcpTransport> t,const QString& name,const QString& ver,int to, QString* err){
     setupTransportCommon(t);
-    if(!m_session->start()){ if(err)*err="Failed to start transport"; emit errorOccurred(*err); return false; }
+    if(!m_session->start()){ if(err)*err="Failed to start transport"; emit errorOccurred(mcp_qt::McpError{-1, *err, QJsonObject{}}); return false; }
     return doInitializeAndWait(name,ver,to,err);
 }
 
@@ -528,7 +534,7 @@ void McpQtClient::setupTransportCommon(std::shared_ptr<mcp::IMcpTransport> t) {
     m_session->setOnError([this](const std::string& err) {
         QString errStr = QString::fromStdString(err);
         QMetaObject::invokeMethod(this, [this, errStr]() {
-            emit errorOccurred(errStr);
+            emit errorOccurred(mcp_qt::McpError{-1, errStr, QJsonObject{}});
             // stderr 已由 QtProcessStdioTransport::serverLog 信号单独处理，
             // 此处 onError 仅在真正的传输层故障时触发，可安全恢复重连
             handleTransportFailure();
@@ -603,7 +609,7 @@ bool McpQtClient::doInitializeAndWait(const QString& name,const QString& ver,int
         });
     }, to);
 
-    if(!ok || !(*initOkPtr)){ if(err)*err="Initialization timeout or failure"; emit errorOccurred(*err); return false; }
+    if(!ok || !(*initOkPtr)){ if(err)*err="Initialization timeout or failure"; emit errorOccurred(mcp_qt::McpError{-1, *err, QJsonObject{}}); return false; }
     m_initialized=true;emit connected();return true;
 }
 bool McpQtClient::doOAuth(const OAuthConfig& oa){
@@ -637,6 +643,13 @@ bool McpQtClient::hasResourcesCapability() const { return serverCapabilities().c
 
 // ========== Tools ==========
 static std::vector<McpQtTool> _cvt(const std::vector<mcp::McpTool>& src) { std::vector<McpQtTool> r; for(const auto& t:src){ r.push_back({QString::fromStdString(t.name), QString::fromStdString(t.description), _qj(t.inputSchema)}); } return r; }
+QString McpQtClient::stripNamespace(const QString& name) const {
+    if (!m_namespace.isEmpty() && name.startsWith(m_namespace + QStringLiteral("__"))) {
+        return name.mid(m_namespace.length() + 2);
+    }
+    return name;
+}
+
 std::vector<McpQtTool> McpQtClient::listTools(int to){
     if (!m_session) return {};
     auto result = std::make_shared<std::vector<mcp::McpTool>>();
@@ -650,6 +663,7 @@ std::vector<McpQtTool> McpQtClient::listTools(int to){
     for(const auto& t : cvtRes) m_toolCache[t.name] = t;
     return cvtRes;
 }
+
 std::vector<McpQtTool> McpQtClient::listTools(const QString& c,QString* n,int to){
     if (!m_session) return {};
     auto result = std::make_shared<std::vector<mcp::McpTool>>();
@@ -774,7 +788,8 @@ static bool validateProperty(const QJsonValue& val, const QJsonObject& propSchem
 }
 
 bool McpQtClient::validateToolArguments(const QString& name, const QJsonObject& arguments, QString* errorString) const {
-    auto it = m_toolCache.find(name);
+    QString actualName = stripNamespace(name);
+    auto it = m_toolCache.find(actualName);
     if (it == m_toolCache.end()) return true;
     QJsonObject schema = it->second.inputSchema;
     
@@ -817,6 +832,7 @@ bool McpQtClient::validateToolArguments(const QString& name, const QJsonObject& 
     return true;
 }
 McpResult McpQtClient::callTool(const QString& nm,const QJsonObject& a,int to){
+    QString actualName = stripNamespace(nm);
     emit toolCalled(nm, a);
     QString errStr;
     if(!validateToolArguments(nm, a, &errStr)) {
@@ -832,7 +848,7 @@ McpResult McpQtClient::callTool(const QString& nm,const QJsonObject& a,int to){
     auto resultData = std::make_shared<nlohmann::json>();
     auto errorData = std::make_shared<nlohmann::json>();
     bool ok = runSyncWithTimeout([&](const std::function<void()>& quit) {
-        m_session->callTool(nm.toStdString(), _nl(a), [resultData, errorData, quit](const nlohmann::json& result, const nlohmann::json& error) {
+        m_session->callTool(actualName.toStdString(), _nl(a), [resultData, errorData, quit](const nlohmann::json& result, const nlohmann::json& error) {
             *resultData = result;
             *errorData = error;
             quit();
@@ -860,6 +876,7 @@ McpResult McpQtClient::callTool(const QString& nm,const QJsonObject& a,int to){
     return r;
 }
 McpResult McpQtClient::callTool(const QString& nm,const QJsonObject& a,ProgressCallback onP,int to){
+    QString actualName = stripNamespace(nm);
     emit toolCalled(nm, a);
     QString errStr;
     if(!validateToolArguments(nm, a, &errStr)) {
@@ -885,7 +902,7 @@ McpResult McpQtClient::callTool(const QString& nm,const QJsonObject& a,ProgressC
         }
     };
     bool ok = runSyncWithTimeout([&](const std::function<void()>& quit) {
-        m_session->callTool(nm.toStdString(), _nl(a), [resultData, errorData, quit](const nlohmann::json& result, const nlohmann::json& error) {
+        m_session->callTool(actualName.toStdString(), _nl(a), [resultData, errorData, quit](const nlohmann::json& result, const nlohmann::json& error) {
             *resultData = result;
             *errorData = error;
             quit();
@@ -913,9 +930,11 @@ McpResult McpQtClient::callTool(const QString& nm,const QJsonObject& a,ProgressC
     return r;
 }
 void McpQtClient::callToolAsync(const QString& nm, const QJsonObject& a, std::function<void(McpResult)> cb, ProgressCallback onP) {
+    QString actualName = stripNamespace(nm);
     callToolAsync(nm, a, this, cb, onP);
 }
 void McpQtClient::callToolAsync(const QString& nm, const QJsonObject& a, QObject* ctx, std::function<void(McpResult)> cb, ProgressCallback onP) {
+    QString actualName = stripNamespace(nm);
     emit toolCalled(nm, a);
     QString errStr;
     if(!validateToolArguments(nm, a, &errStr)) {
@@ -1024,6 +1043,7 @@ static McpQtToolResult parseToolResult(const QJsonObject& raw, bool isError, con
 }
 
 McpQtToolResult McpQtClient::callToolTyped(const QString& nm, const QJsonObject& a, int to) {
+    QString actualName = stripNamespace(nm);
     McpResult r = callTool(nm, a, to);
     return parseToolResult(r.data, r.isError, r.errorString);
 }
@@ -1048,13 +1068,17 @@ static QJsonObject ensureValidSchema(const QJsonObject& schema) {
     return schema;
 }
 
-QJsonObject McpQtClient::exportToolToLlmFormat(const McpQtTool& tool, LlmFormat format) {
+QJsonObject McpQtClient::exportToolToLlmFormat(const McpQtTool& tool, LlmFormat format, const QString& prefix) {
     QJsonObject result;
     QJsonObject validSchema = ensureValidSchema(tool.inputSchema);
+    QString exportName = tool.name;
+    if (!prefix.isEmpty()) {
+        exportName = prefix + QStringLiteral("__") + tool.name;
+    }
 
     if (format == LlmFormat::OpenAI) {
         QJsonObject functionObj;
-        functionObj[QStringLiteral("name")] = tool.name;
+        functionObj[QStringLiteral("name")] = exportName;
         if (!tool.description.isEmpty()) {
             functionObj[QStringLiteral("description")] = tool.description;
         }
@@ -1062,13 +1086,13 @@ QJsonObject McpQtClient::exportToolToLlmFormat(const McpQtTool& tool, LlmFormat 
         result[QStringLiteral("type")] = QStringLiteral("function");
         result[QStringLiteral("function")] = functionObj;
     } else if (format == LlmFormat::Anthropic) {
-        result[QStringLiteral("name")] = tool.name;
+        result[QStringLiteral("name")] = exportName;
         if (!tool.description.isEmpty()) {
             result[QStringLiteral("description")] = tool.description;
         }
         result[QStringLiteral("input_schema")] = validSchema;
     } else if (format == LlmFormat::Gemini) {
-        result[QStringLiteral("name")] = tool.name;
+        result[QStringLiteral("name")] = exportName;
         if (!tool.description.isEmpty()) {
             result[QStringLiteral("description")] = tool.description;
         }
@@ -1078,17 +1102,17 @@ QJsonObject McpQtClient::exportToolToLlmFormat(const McpQtTool& tool, LlmFormat 
 }
 
 QJsonObject McpQtClient::exportToolToLlmFormat(const QString& name, LlmFormat format) const {
-    auto it = m_toolCache.find(name);
+    auto it = m_toolCache.find(stripNamespace(name));
     if (it == m_toolCache.end()) {
         return QJsonObject{};
     }
-    return exportToolToLlmFormat(it->second, format);
+    return exportToolToLlmFormat(it->second, format, m_namespace);
 }
 
 QJsonArray McpQtClient::exportAllToolsToLlmFormat(LlmFormat format) const {
     QJsonArray arr;
     for (auto it = m_toolCache.begin(); it != m_toolCache.end(); ++it) {
-        arr.append(exportToolToLlmFormat(it->second, format));
+        arr.append(exportToolToLlmFormat(it->second, format, m_namespace));
     }
     return arr;
 }
@@ -1097,7 +1121,11 @@ QJsonArray McpQtClient::exportAllToolsAsMcpSchema() const {
     QJsonArray arr;
     for (auto it = m_toolCache.begin(); it != m_toolCache.end(); ++it) {
         QJsonObject obj;
-        obj[QStringLiteral("name")] = it->second.name;
+        QString exportName = it->second.name;
+        if (!m_namespace.isEmpty()) {
+            exportName = m_namespace + QStringLiteral("__") + exportName;
+        }
+        obj[QStringLiteral("name")] = exportName;
         if (!it->second.description.isEmpty()) {
             obj[QStringLiteral("description")] = it->second.description;
         }
@@ -1247,9 +1275,10 @@ void McpQtClient::callToolsConcurrentAsync(const std::vector<McpBatchCallRequest
         };
 
         // 异步发起请求
+        QString actualName = stripNamespace(req.name);
         int64_t reqId = sendRequest(
             QStringLiteral("tools/call"), 
-            QJsonObject{{QStringLiteral("name"), req.name}, {QStringLiteral("arguments"), req.arguments}}, 
+            QJsonObject{{QStringLiteral("name"), actualName}, {QStringLiteral("arguments"), req.arguments}}, 
             this,
             [cbWrapper](const QJsonObject& r, const QJsonObject& e) {
                 bool isErr = !e.isEmpty();
@@ -1605,10 +1634,11 @@ void McpQtClient::listPromptsAsync(const QString& cursor, std::function<void(con
 }
 
 QJsonObject McpQtClient::getPrompt(const QString& nm,const QJsonObject& a,int to){
+    QString actualName = stripNamespace(nm);
     if (!m_session) return {};
     auto resultData = std::make_shared<nlohmann::json>();
     runSyncWithTimeout([&](const std::function<void()>& quit) {
-        m_session->getPrompt(nm.toStdString(), _nl(a), [resultData, quit](const nlohmann::json& result, const nlohmann::json& error) {
+        m_session->getPrompt(actualName.toStdString(), _nl(a), [resultData, quit](const nlohmann::json& result, const nlohmann::json& error) {
             *resultData = result;
             quit();
         });
@@ -2302,6 +2332,7 @@ void McpQtClient::setTrafficLogger(TrafficLogger logger) {
 
 std::shared_ptr<McpQtClient> McpQtClientBuilder::buildAndConnectAsync() {
     auto c = std::shared_ptr<McpQtClient>(new McpQtClient());
+    c->m_namespace = m_namespace;
     c->m_transportType = m_transportType;
     c->m_url_or_cmd = m_url_or_cmd;
     c->m_args = m_args;
@@ -2398,7 +2429,7 @@ void McpQtClient::connectToTransportAsync(std::shared_ptr<mcp::IMcpTransport> t,
     setupTransportCommon(t);
     if (!m_session->start()) {
         QMetaObject::invokeMethod(this, [this]() {
-            emit errorOccurred("Failed to start transport");
+            emit errorOccurred(mcp_qt::McpError{-1, QStringLiteral("Failed to start transport"), QJsonObject{}});
         }, Qt::QueuedConnection);
         return;
     }
@@ -2411,7 +2442,7 @@ void McpQtClient::doInitializeAsync(const QString& name, const QString& ver) {
             QString errStr = "Initialization failure";
             if (!errorJson.empty()) errStr = QString::fromStdString(errorJson.dump());
             QMetaObject::invokeMethod(this, [this, errStr]() {
-                emit errorOccurred(errStr);
+                emit errorOccurred(mcp_qt::McpError{-1, errStr, QJsonObject{}});
             }, Qt::QueuedConnection);
         } else {
             QMetaObject::invokeMethod(this, [this]() {

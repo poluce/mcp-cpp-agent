@@ -37,7 +37,7 @@ QtHttpSseWorker::QtHttpSseWorker(QString baseUrl, QObject* parent)
     m_healthCheckTimer->setInterval(50);
     connect(m_healthCheckTimer, &QTimer::timeout, this, [this]() {
         if (!m_sseConnected || m_stopping) return;
-        if (m_lastDataTime.isValid() && m_lastDataTime.elapsed() > 100) {
+        if (m_lastDataTime.isValid() && m_lastDataTime.elapsed() > 5000) {
             // 连接停滞检测：若超过 5 秒未恢复数据，则主动断开触发重连
             if (!m_lastHealthCheckTime.isValid() || m_lastHealthCheckTime.elapsed() > 5000) {
                 m_lastHealthCheckTime.start();

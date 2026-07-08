@@ -1,6 +1,11 @@
 set(CMAKE_AUTOMOC ON)
 
 add_library(mcp_qt_client STATIC
+    include/mcp_qt_client/McpServerConfig.h
+    include/mcp_qt_client/IMcpConfigLoader.h
+    include/mcp_qt_client/McpJsonConfigLoader.h
+    src/McpJsonConfigLoader.cpp
+    include/mcp_qt_client/McpError.h
     include/mcp_qt_client/McpQtClient.h
     src/McpQtClient.cpp
     include/mcp_qt_client/McpToolsModel.h

@@ -9,6 +9,7 @@
 #include <mcp_qt_client/McpResourceSubscriptionRouter.h>
 #include <mcp_qt_client/McpToolsModel.h>
 #include <mcp_core/McpReconnectPolicy.h>
+#include <mcp_qt_client/McpError.h>
 
 #include <QObject>
 #include <QPointer>
@@ -84,6 +85,7 @@ public:
     McpQtClientBuilder& setTransportStatelessHttp(const QString& url);
     McpQtClientBuilder& setTransportStdio(const QString& command, const QStringList& args = {});
     McpQtClientBuilder& setEnvironment(const QMap<QString, QString>& env);
+    McpQtClientBuilder& setNamespace(const QString& ns);
     McpQtClientBuilder& setClientInfo(const QString& name, const QString& version);
     McpQtClientBuilder& setTimeout(int ms);
     McpQtClientBuilder& setHttpHeaders(const QMap<QString, QString>& headers);
@@ -92,6 +94,7 @@ public:
     std::shared_ptr<McpQtClient> buildAndConnectAndWait(QString* errorString = nullptr);
     std::shared_ptr<McpQtClient> buildAndConnectAsync();
 private:
+    QString m_namespace;
     int m_transportType{0}; // 0=none, 1=http, 2=stdio, 3=stateless_http
     QString m_url_or_cmd;
     QStringList m_args;
@@ -200,6 +203,10 @@ public:
     bool hasPromptsCapability() const;
     bool hasResourcesCapability() const;
 
+    QString nameSpace() const { return m_namespace; }
+    void setNamespace(const QString& ns) { m_namespace = ns; }
+    QString stripNamespace(const QString& name) const;
+
     // ========== Tools（对齐 TS `listTools()`, `callTool()`）==========
 
     using ProgressCallback = std::function<void(float progress, float total, const QString& message)>;
@@ -265,7 +272,7 @@ public:
     };
 
     /// 将给定的 McpQtTool 转换为指定 LLM 格式的 JSON 对象
-    static QJsonObject exportToolToLlmFormat(const McpQtTool& tool, LlmFormat format = LlmFormat::OpenAI);
+    static QJsonObject exportToolToLlmFormat(const McpQtTool& tool, LlmFormat format = LlmFormat::OpenAI, const QString& prefix = QString());
 
     /// 根据工具名称从缓存中导出为指定 LLM 格式 of JSON 对象
     QJsonObject exportToolToLlmFormat(const QString& name, LlmFormat format = LlmFormat::OpenAI) const;
@@ -426,7 +433,7 @@ public:
 signals:
     void connected();
     void disconnected();
-    void errorOccurred(const QString& message);
+    void errorOccurred(const mcp_qt::McpError& error);
     
     /// 收到服务端的任意通知
     void notificationReceived(const QString& method, const QJsonObject& params);
@@ -475,6 +482,7 @@ private:
     std::vector<PendingCapability> m_pendingCapabilities;
 
     // 重连与恢复上下文
+    QString m_namespace;
     int m_transportType{0}; // 0=none/test, 1=http, 2=stdio
     QString m_url_or_cmd;
     QStringList m_args;
@@ -559,3 +567,5 @@ private:
 };
 
 } // namespace mcp_qt
+
+
