@@ -36,7 +36,9 @@ public:
 
     // ================= 2. Server Management =================
     QStringList serverNames() const;
-    void setServerEnabled(const QString& serverName, bool enabled);
+    void setServerEnabled(const QString& serverName, bool enabled, bool persist = true);
+    void removeServerConfig(const QString& serverName, bool persist = true);
+    void addOrUpdateServerConfig(const McpServerConfig& config, bool persist = true);
     bool isServerEnabled(const QString& serverName) const;
     
     McpServerState serverState(const QString& serverName) const;
@@ -71,6 +73,11 @@ private:
     void checkReadyCondition();
     void finishStartup(bool success, const QString& summaryMsg);
     bool loadConfigs(const QList<McpServerConfig>& configs);
+
+    bool persistServerProperty(const QString& serverName, const QString& key, const QJsonValue& value);
+    bool persistServerObject(const QString& serverName, const QJsonObject& obj);
+    bool persistRemoveServer(const QString& serverName);
+    QJsonObject serializeServerConfig(const McpServerConfig& cfg) const;
 
     McpServerManager* m_manager;
     McpToolRouter* m_toolRouter;

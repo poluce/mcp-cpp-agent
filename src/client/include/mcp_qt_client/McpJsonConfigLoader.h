@@ -14,7 +14,6 @@ public:
 
 private:
     QJsonObject m_configObj;
-    QString interpolateEnv(const QString& value) const;
 };
 
 } // namespace mcp_qt

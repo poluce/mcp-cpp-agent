@@ -27,24 +27,6 @@ McpJsonConfigLoader McpJsonConfigLoader::fromFile(const QString& filePath) {
     return McpJsonConfigLoader(doc.object());
 }
 
-QString McpJsonConfigLoader::interpolateEnv(const QString& value) const {
-    QString result = value;
-    static QRegularExpression re(QStringLiteral("\\$\\{([A-Za-z0-9_]+)\\}"));
-    auto env = QProcessEnvironment::systemEnvironment();
-    
-    QRegularExpressionMatchIterator i = re.globalMatch(value);
-    int offset = 0;
-    while (i.hasNext()) {
-        QRegularExpressionMatch match = i.next();
-        QString varName = match.captured(1);
-        if (env.contains(varName)) {
-            QString replacement = env.value(varName);
-            result.replace(match.capturedStart(0) + offset, match.capturedLength(0), replacement);
-            offset += replacement.length() - match.capturedLength(0);
-        }
-    }
-    return result;
-}
 
 QList<McpServerConfig> McpJsonConfigLoader::load() {
     QList<McpServerConfig> configs;
@@ -64,23 +46,23 @@ QList<McpServerConfig> McpJsonConfigLoader::load() {
         cfg.disabled = serverCfg.value(QStringLiteral("disabled")).toBool(false);
 
         if (serverCfg.contains(QStringLiteral("command"))) {
-            cfg.command = interpolateEnv(serverCfg.value(QStringLiteral("command")).toString());
+            cfg.command = serverCfg.value(QStringLiteral("command")).toString();
         }
         if (serverCfg.contains(QStringLiteral("args")) && serverCfg.value(QStringLiteral("args")).isArray()) {
             QJsonArray argsArr = serverCfg.value(QStringLiteral("args")).toArray();
             for (const auto& argVal : argsArr) {
-                cfg.args.append(interpolateEnv(argVal.toString()));
+                cfg.args.append(argVal.toString());
             }
         }
         if (serverCfg.contains(QStringLiteral("url"))) {
-            cfg.url = interpolateEnv(serverCfg.value(QStringLiteral("url")).toString());
+            cfg.url = serverCfg.value(QStringLiteral("url")).toString();
         }
         if (serverCfg.contains(QStringLiteral("type"))) {
             cfg.type = serverCfg.value(QStringLiteral("type")).toString();
         }
 
         if (serverCfg.contains(QStringLiteral("namespace"))) {
-            cfg.nameSpace = interpolateEnv(serverCfg.value(QStringLiteral("namespace")).toString());
+            cfg.nameSpace = serverCfg.value(QStringLiteral("namespace")).toString();
         }
 
         if (serverCfg.contains(QStringLiteral("env")) && serverCfg.value(QStringLiteral("env")).isObject()) {
@@ -92,7 +74,7 @@ QList<McpServerConfig> McpJsonConfigLoader::load() {
                 } else {
                     envVal = envIt.value().toVariant().toString();
                 }
-                cfg.env.insert(envIt.key(), interpolateEnv(envVal));
+                cfg.env.insert(envIt.key(), envVal);
             }
         }
         
@@ -100,7 +82,7 @@ QList<McpServerConfig> McpJsonConfigLoader::load() {
             QJsonObject hdrs = serverCfg.value(QStringLiteral("headers")).toObject();
             for (auto hdrIt = hdrs.constBegin(); hdrIt != hdrs.constEnd(); ++hdrIt) {
                 if (hdrIt.value().isString()) {
-                    cfg.headers.insert(hdrIt.key(), interpolateEnv(hdrIt.value().toString()));
+                    cfg.headers.insert(hdrIt.key(), hdrIt.value().toString());
                 }
             }
         }

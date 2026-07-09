@@ -38,6 +38,9 @@ public:
     bool loadServers(std::shared_ptr<IMcpConfigLoader> loader);
     bool loadServers(const QList<McpServerConfig>& configs);
 
+    bool startServer(const McpServerConfig& cfg);
+    void stopServer(const QString& serverName);
+
     void registerClient(const QString& serverName, std::shared_ptr<McpQtClient> client);
     void unregisterClient(const QString& serverName);
 
@@ -72,6 +75,7 @@ signals:
     void allToolsReady();
 
 private:
+    static QString interpolateEnv(const QString& value);
     static void configureBuilder(McpQtClientBuilder& builder, const McpServerConfig& cfg);
     void processHttpServerConfig(const McpServerConfig& cfg);
     void setupClientSignals(const QString& serverName, const std::shared_ptr<McpQtClient>& client);

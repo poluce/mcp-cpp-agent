@@ -6,6 +6,8 @@
 #include <QPointer>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
+#include <QProcessEnvironment>
+#include <QRegularExpression>
 
 namespace mcp_qt {
 
@@ -21,6 +23,25 @@ bool McpServerManager::loadServers(std::shared_ptr<IMcpConfigLoader> loader) {
     return loadServers(loader->load());
 }
 
+QString McpServerManager::interpolateEnv(const QString& value) {
+    QString result = value;
+    static QRegularExpression re(QStringLiteral("\\$\\{([A-Za-z0-9_]+)\\}"));
+    auto env = QProcessEnvironment::systemEnvironment();
+    
+    QRegularExpressionMatchIterator i = re.globalMatch(value);
+    int offset = 0;
+    while (i.hasNext()) {
+        QRegularExpressionMatch match = i.next();
+        QString varName = match.captured(1);
+        if (env.contains(varName)) {
+            QString replacement = env.value(varName);
+            result.replace(match.capturedStart(0) + offset, match.capturedLength(0), replacement);
+            offset += replacement.length() - match.capturedLength(0);
+        }
+    }
+    return result;
+}
+
 void McpServerManager::configureBuilder(McpQtClientBuilder& builder, const McpServerConfig& cfg) {
     if (!cfg.env.isEmpty()) builder.setEnvironment(cfg.env);
     if (!cfg.headers.isEmpty()) builder.setHttpHeaders(cfg.headers);
@@ -34,29 +55,49 @@ bool McpServerManager::loadServers(const QList<McpServerConfig>& configs) {
     for (const auto& cfg : configs) {
         if (cfg.disabled) continue;
         loadedServers.insert(cfg.serverName);
-
-        if (!cfg.url.isEmpty()) {
-            processHttpServerConfig(cfg);
-        } else if (!cfg.command.isEmpty()) {
-            McpQtClientBuilder builder;
-            configureBuilder(builder, cfg);
-            builder.setTransportStdio(cfg.command, cfg.args);
-
-            auto clientPtr = builder.buildAndConnectAsync();
-            if (clientPtr) registerClient(cfg.serverName, clientPtr);
-        } else {
-            qWarning() << "Server config for" << cfg.serverName << "does not contain url or command";
-        }
+        startServer(cfg);
     }
 
     QStringList currentServers = serverNames();
     for (const QString& existing : currentServers) {
         if (!loadedServers.contains(existing)) {
-            unregisterClient(existing);
+            stopServer(existing);
         }
     }
 
     return true;
+}
+
+bool McpServerManager::startServer(const McpServerConfig& rawCfg) {
+    if (rawCfg.disabled) return false;
+    stopServer(rawCfg.serverName);
+
+    McpServerConfig cfg = rawCfg;
+    cfg.command = interpolateEnv(cfg.command);
+    for (int i = 0; i < cfg.args.size(); ++i) cfg.args[i] = interpolateEnv(cfg.args[i]);
+    cfg.url = interpolateEnv(cfg.url);
+    cfg.nameSpace = interpolateEnv(cfg.nameSpace);
+    for (auto it = cfg.env.begin(); it != cfg.env.end(); ++it) *it = interpolateEnv(*it);
+    for (auto it = cfg.headers.begin(); it != cfg.headers.end(); ++it) *it = interpolateEnv(*it);
+
+    if (!cfg.url.isEmpty()) {
+        processHttpServerConfig(cfg);
+    } else if (!cfg.command.isEmpty()) {
+        McpQtClientBuilder builder;
+        configureBuilder(builder, cfg);
+        builder.setTransportStdio(cfg.command, cfg.args);
+
+        auto clientPtr = builder.buildAndConnectAsync();
+        if (clientPtr) registerClient(cfg.serverName, clientPtr);
+    } else {
+        qWarning() << "Server config for" << cfg.serverName << "does not contain url or command";
+        return false;
+    }
+    return true;
+}
+
+void McpServerManager::stopServer(const QString& serverName) {
+    unregisterClient(serverName);
 }
 
 void McpServerManager::processHttpServerConfig(const McpServerConfig& cfg) {
