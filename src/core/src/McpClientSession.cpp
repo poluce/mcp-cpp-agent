@@ -25,7 +25,23 @@ void McpClientSession::emitTrafficEvent(McpTrafficDirection dir, McpTrafficKind 
 }
 
 McpClientSession::McpClientSession(std::shared_ptr<IMcpTransport> transport)
-    : m_transport(std::move(transport)) {}
+    : m_transport(std::move(transport)) {
+    // 默认注册 roots/list 请求处理器，避免服务端询问时报错 "Method not found"
+    registerRequestHandler("roots/list", [this](const std::string&, const json&, std::function<void(const json& result, const json& error)> cb) {
+        RootsProvider rootsCb;
+        {
+            std::lock_guard<std::mutex> lk(m_mutex);
+            rootsCb = m_rootsProvider;
+        }
+        if (!rootsCb) {
+            cb({{"roots", json::array()}}, json::object());
+            return;
+        }
+        rootsCb([cb](const json& result, const json& error) {
+            cb({{"roots", result}}, error);
+        });
+    });
+}
 
 McpClientSession::~McpClientSession() {
     close();
@@ -1160,26 +1176,8 @@ void McpClientSession::setElicitationHandler(ElicitationHandler handler) {
 // ==========================================
 
 void McpClientSession::setRootsProvider(RootsProvider provider) {
-    {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        m_rootsProvider = std::move(provider);
-    }
-
-    // 注册 roots/list 请求处理器（在锁外调用避免死锁）
-    registerRequestHandler("roots/list", [this](const std::string&, const json&, std::function<void(const json& result, const json& error)> cb) {
-        RootsProvider rootsCb;
-        {
-            std::lock_guard<std::mutex> lk(m_mutex);
-            rootsCb = m_rootsProvider;
-        }
-        if (!rootsCb) {
-            cb({{"roots", json::array()}}, json::object());
-            return;
-        }
-        rootsCb([cb](const json& result, const json& error) {
-            cb({{"roots", result}}, error);
-        });
-    });
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_rootsProvider = std::move(provider);
 }
 
 void McpClientSession::notifyRootsListChanged() {
