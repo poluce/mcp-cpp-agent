@@ -263,6 +263,11 @@ public:
     /**
      * @brief Register a provider for roots/list requests.
      *        When the server requests roots/list, the provider returns the root array.
+     * 
+     *        Note: The session inherently registers a default handler for roots/list at initialization.
+     *        If no provider is set via this method, the default handler responds with an empty roots array `{"roots": []}`
+     *        to prevent "-32601 Method not found" errors during server handshake. Calling this method
+     *        allows you to supply the actual workspace roots.
      */
     void setRootsProvider(RootsProvider provider);
 

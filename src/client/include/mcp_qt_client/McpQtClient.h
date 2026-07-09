@@ -376,6 +376,14 @@ public:
     void setSamplingHandler(QObject* context, SamplingHandler handler);
 
     using RootsProvider = std::function<void(std::function<void(const QJsonArray& result, const QJsonObject& error)> callback)>;
+    
+    /**
+     * @brief 设置客户端的工作区根目录提供者 (Roots Provider)。
+     * 
+     * 客户端在初始化时默认已声明支持 `roots` 能力。
+     * - 如果不调用此方法，底层会自动拦截服务端的 `roots/list` 请求并默认返回空列表 `{"roots": []}`，避免 "-32601 Method not found" 错误。
+     * - 调用此方法可注入实际的 Provider 处理逻辑。可随时重复调用以替换旧的 Provider。
+     */
     void setRootsProvider(RootsProvider provider);
     void setRootsProvider(QObject* context, RootsProvider provider);
     void notifyRootsListChanged();
