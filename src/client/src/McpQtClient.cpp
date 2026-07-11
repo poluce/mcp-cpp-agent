@@ -5,6 +5,8 @@
 #include "mcp_core/McpOAuthClient.h"
 #include "mcp_core/IMcpTransport.h"
 #include "mcp_core/McpReconnectPolicy.h"
+#include <QCoreApplication>
+#include <QThread>
 
 inline void assertNotMainGuiThread() {
 #if !defined(QT_NO_DEBUG)
@@ -12,7 +14,7 @@ inline void assertNotMainGuiThread() {
     // Allow synchronous blocks during application teardown to cleanly close resources.
     // If the application is quitting, it might not be safe to assert.
     if (app && app->inherits("QGuiApplication")) {
-        // We warn instead of crashing, because crashing on teardown or nested event loop 
+        // We warn instead of crashing, because crashing on teardown or nested event loop
         // in some specific UI designs might be too aggressive for a general SDK.
         if (QThread::currentThread() == app->thread()) {
             qWarning() << "[McpQtClient] WARNING: Blocking synchronous MCP call executed on the main GUI thread! "
