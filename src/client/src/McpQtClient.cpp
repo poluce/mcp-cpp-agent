@@ -8,18 +8,21 @@
 #include <QCoreApplication>
 #include <QThread>
 
-inline void assertNotMainGuiThread() {
+inline bool isMainGuiThread()
+{
+    QCoreApplication *app = QCoreApplication::instance();
+    return app
+        && app->inherits("QGuiApplication")
+        && QThread::currentThread() == app->thread();
+}
+
+inline void assertNotMainGuiThread()
+{
 #if !defined(QT_NO_DEBUG)
-    QCoreApplication* app = QCoreApplication::instance();
-    // Allow synchronous blocks during application teardown to cleanly close resources.
-    // If the application is quitting, it might not be safe to assert.
-    if (app && app->inherits("QGuiApplication")) {
-        // We warn instead of crashing, because crashing on teardown or nested event loop
-        // in some specific UI designs might be too aggressive for a general SDK.
-        if (QThread::currentThread() == app->thread()) {
-            qWarning() << "[McpQtClient] WARNING: Blocking synchronous MCP call executed on the main GUI thread! "
-                       << "This may cause UI freezes or nested event loop issues.";
-        }
+    // 同步阻塞调用在 GUI 线程会冻 UI；仅告警不 abort，避免 teardown/嵌套事件循环场景过激。
+    if (isMainGuiThread()) {
+        qWarning() << "[McpQtClient] WARNING: Blocking synchronous MCP call executed on the main GUI thread! "
+                   << "This may cause UI freezes or nested event loop issues.";
     }
 #endif
 }
@@ -1918,7 +1921,6 @@ void McpQtClient::registerCapability(const QString& n,const QJsonObject& c){
 // ========== 生命周期 ==========
 bool McpQtClient::isConnected()const{return m_session&&m_session->state()==mcp::SessionState::Initialized;}
 void McpQtClient::close(int to){
-    assertNotMainGuiThread();
     m_isUserClosed = true;
     if (m_reconnectTimer) {
         m_reconnectTimer->stop();
@@ -1934,13 +1936,13 @@ void McpQtClient::close(int to){
         m_inFlightReplayableRequests.clear();
     }
 
-    if(m_session){
-        runSyncWithTimeout([this](auto quit) {
-            m_session->shutdown([quit](bool) {
-                quit();
-            });
-        }, to);
-
+    if (m_session) {
+        // GUI 线程禁止 runSyncWithTimeout：shutdown 若等不到响应会卡满 timeout（默认 5s）。
+        if (!isMainGuiThread()) {
+            runSyncWithTimeout([this](auto quit) {
+                m_session->shutdown([quit](bool) { quit(); });
+            }, to);
+        }
         m_session->close();
         m_session.reset();
     }

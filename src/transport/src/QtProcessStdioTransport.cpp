@@ -1,11 +1,65 @@
 #include "mcp_qt_transport/QtProcessStdioTransport.h"
+
+#include <QCoreApplication>
 #include <QDebug>
 #include <QNetworkProxyFactory>
 #include <QNetworkProxyQuery>
+#include <QThread>
 #include <QUrl>
+
 #include <string_view>
 
 namespace mcp_qt {
+
+namespace {
+
+// systemProxyForQuery 在部分 Windows/PAC 环境下可能阻塞很久；进程级缓存一次即可。
+QString cachedSystemProxyUrl()
+{
+    static const QString kProxy = []() -> QString {
+        const QList<QNetworkProxy> proxies = QNetworkProxyFactory::systemProxyForQuery(
+            QNetworkProxyQuery(QUrl(QStringLiteral("https://example.com"))));
+        if (proxies.isEmpty()) {
+            return {};
+        }
+
+        const QNetworkProxy &proxy = proxies.first();
+        if (proxy.type() != QNetworkProxy::HttpProxy && proxy.type() != QNetworkProxy::Socks5Proxy) {
+            return {};
+        }
+        if (proxy.hostName().isEmpty() || proxy.port() <= 0) {
+            return {};
+        }
+
+        const QString scheme = (proxy.type() == QNetworkProxy::HttpProxy)
+            ? QStringLiteral("http")
+            : QStringLiteral("socks5");
+        return QStringLiteral("%1://%2:%3").arg(scheme, proxy.hostName()).arg(proxy.port());
+    }();
+    return kProxy;
+}
+
+bool onAppMainThread()
+{
+    const QCoreApplication *app = QCoreApplication::instance();
+    return app && QThread::currentThread() == app->thread();
+}
+
+bool envHasProxy(const std::unordered_map<std::string, std::string> &env)
+{
+    return env.count("HTTP_PROXY") || env.count("http_proxy")
+        || env.count("HTTPS_PROXY") || env.count("https_proxy");
+}
+
+void insertProxyEnv(QProcessEnvironment &env, const QString &proxyUrl)
+{
+    env.insert(QStringLiteral("HTTP_PROXY"), proxyUrl);
+    env.insert(QStringLiteral("HTTPS_PROXY"), proxyUrl);
+    env.insert(QStringLiteral("http_proxy"), proxyUrl);
+    env.insert(QStringLiteral("https_proxy"), proxyUrl);
+}
+
+} // namespace
 
 QtProcessStdioTransport::QtProcessStdioTransport(const std::string& command, const std::vector<std::string>& args, QObject* parent)
     : QObject(parent), m_command(command), m_args(args), m_process(new QProcess(this)) {
@@ -43,8 +97,25 @@ void QtProcessStdioTransport::setEnvironment(const std::unordered_map<std::strin
 }
 
 bool QtProcessStdioTransport::start() {
+    // 代理探测可能很慢：不要持有 m_mutex，避免与 readyRead/close 死锁。
+    bool userHasProxy = false;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        userHasProxy = envHasProxy(m_env);
+    }
+
+    QString proxyUrl;
+    if (!userHasProxy) {
+        proxyUrl = cachedSystemProxyUrl();
+        if (!proxyUrl.isEmpty()) {
+            qDebug() << "[QtProcessStdioTransport] Auto-detected system proxy:" << proxyUrl;
+        }
+    }
+
     std::lock_guard<std::mutex> lock(m_mutex);
-    if (m_started) return true;
+    if (m_started) {
+        return true;
+    }
 
 #ifdef _WIN32
     if (!m_jobObject) {
@@ -60,44 +131,22 @@ bool QtProcessStdioTransport::start() {
         }
     }
 #endif
-    
-    // 构建进程环境变量：先注入系统代理，再叠加用户自定义配置
+
+    // 先注入系统代理，再叠加用户自定义环境变量（后者覆盖同名键）
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-
-    // 自动探测系统 HTTP/SOCKS5 代理并注入（仅当用户未手动指定任何代理变量时）
-    {
-        bool userHasProxy = m_env.count("HTTP_PROXY") || m_env.count("http_proxy")
-                         || m_env.count("HTTPS_PROXY") || m_env.count("https_proxy");
-
-        if (!userHasProxy) {
-            QList<QNetworkProxy> proxies = QNetworkProxyFactory::systemProxyForQuery(
-                QNetworkProxyQuery(QUrl(QStringLiteral("https://www.google.com"))));
-            if (!proxies.isEmpty()) {
-                const QNetworkProxy& proxy = proxies.first();
-                if (proxy.type() == QNetworkProxy::HttpProxy || proxy.type() == QNetworkProxy::Socks5Proxy) {
-                    QString proxyStr = QStringLiteral("%1://%2:%3")
-                        .arg(proxy.type() == QNetworkProxy::HttpProxy ? QStringLiteral("http") : QStringLiteral("socks5"))
-                        .arg(proxy.hostName())
-                        .arg(proxy.port());
-                    env.insert(QStringLiteral("HTTP_PROXY"), proxyStr);
-                    env.insert(QStringLiteral("HTTPS_PROXY"), proxyStr);
-                    env.insert(QStringLiteral("http_proxy"), proxyStr);
-                    env.insert(QStringLiteral("https_proxy"), proxyStr);
-                    qDebug() << "[QtProcessStdioTransport] Auto-detected system proxy:" << proxyStr;
-                }
-            }
-        }
+    if (!proxyUrl.isEmpty()) {
+        insertProxyEnv(env, proxyUrl);
     }
-
-    // 叠加用户自定义环境变量（会覆盖上面自动注入的同名变量）
-    for (const auto& kv : m_env) {
+    for (const auto &kv : m_env) {
         env.insert(QString::fromStdString(kv.first), QString::fromStdString(kv.second));
     }
     m_process->setProcessEnvironment(env);
-    
+
     QStringList qargs;
-    for (const auto& a : m_args) qargs.push_back(QString::fromStdString(a));
-    
+    for (const auto &a : m_args) {
+        qargs.push_back(QString::fromStdString(a));
+    }
+
     m_process->start(QString::fromStdString(m_command), qargs);
     m_started = true;
     return true;
@@ -105,7 +154,7 @@ bool QtProcessStdioTransport::start() {
 
 void QtProcessStdioTransport::close() {
     std::function<void()> closeCb;
-    QProcess* p = nullptr;
+    QProcess *p = nullptr;
     {
         std::lock_guard<std::mutex> lock(m_mutex);
 #ifdef _WIN32
@@ -114,21 +163,28 @@ void QtProcessStdioTransport::close() {
             m_jobObject = nullptr;
         }
 #endif
-        if (!m_started) return;
+        if (!m_started) {
+            return;
+        }
         m_started = false;
-        
+
         p = m_process;
         closeCb = m_onClose;
     }
-    
+
     if (p && p->state() != QProcess::NotRunning) {
-        p->terminate();
-        if (!p->waitForFinished(500)) {
+        // 主线程禁止 waitForFinished：子进程（npx 等）卡住时会直接冻死 UI。
+        if (onAppMainThread()) {
             p->kill();
-            p->waitForFinished(500);
+        } else {
+            p->terminate();
+            if (!p->waitForFinished(500)) {
+                p->kill();
+                p->waitForFinished(500);
+            }
         }
     }
-    
+
     if (closeCb) {
         closeCb();
     }
@@ -136,11 +192,16 @@ void QtProcessStdioTransport::close() {
 
 bool QtProcessStdioTransport::send(const std::string& message) {
     std::lock_guard<std::mutex> lock(m_mutex);
-    if (!m_started || (m_process->state() != QProcess::Running && m_process->state() != QProcess::Starting)) return false;
-    
+    if (!m_started || (m_process->state() != QProcess::Running && m_process->state() != QProcess::Starting)) {
+        return false;
+    }
+
     m_process->write(message.c_str(), message.size());
     m_process->write("\n", 1);
-    m_process->waitForBytesWritten(100);
+    // 主线程不要同步等写完成；后台线程保留短超时。
+    if (!onAppMainThread()) {
+        m_process->waitForBytesWritten(100);
+    }
     return true;
 }
 
